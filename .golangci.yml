@@ -1,0 +1,33 @@
+version: "2"
+run:
+  modules-download-mode: readonly
+linters:
+  default: standard
+  enable:
+    - gocritic
+    - godot
+    - gosec
+  exclusions:
+    rules:
+      - linters:
+          - gosec
+        path: "_test\\.go"
+      - linters:
+          - errcheck
+        path: "_test\\.go"
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    gofmt:
+      simplify: true
+    goimports:
+      local-prefixes:
+        - github.com/openfga/mapper
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
