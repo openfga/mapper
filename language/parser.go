@@ -3,12 +3,21 @@ package language
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/goccy/go-yaml"
 	"github.com/goccy/go-yaml/ast"
 	"github.com/goccy/go-yaml/parser"
 )
+
+// variableNamePattern constrains variable names to Expr identifiers. Names are
+// referenced in expressions as variables.<name> (member access), so a name
+// containing a dot or other non-identifier character is unreachable — reject it
+// at validation rather than silently binding a dead variable.
+const variableNamePattern = `^[A-Za-z_][A-Za-z0-9_]*$`
+
+var validVariableName = regexp.MustCompile(variableNamePattern)
 
 const (
 	// DefaultMaxRules is the default cap on the number of rules a single mapping
@@ -50,6 +59,9 @@ func parseMapping(data []byte) (*MappingConfig, error) {
 	}
 	if file == nil || len(file.Docs) == 0 {
 		return nil, fmt.Errorf("invalid YAML: empty YAML document")
+	}
+	if len(file.Docs) > 1 {
+		return nil, fmt.Errorf("invalid YAML: multiple YAML documents are not supported (found %d); provide a single mapping document", len(file.Docs))
 	}
 
 	root := file.Docs[0].Body
@@ -329,6 +341,13 @@ func validateRule(rule *Rule, index int, root ast.Node) []error {
 				Position: nodePosition(resolveNodePath(root, varNodePath)),
 			})
 		}
+		if v.Name != "" && !validVariableName.MatchString(v.Name) {
+			errs = append(errs, &ValidationError{
+				Field:    fmt.Sprintf("%s.variables[%d].name", displayPrefix, j),
+				Message:  fmt.Sprintf("invalid variable name %q (must match %s)", v.Name, variableNamePattern),
+				Position: nodePosition(resolveNodePath(root, varNodePath)),
+			})
+		}
 		if v.Name != "" {
 			if prev, exists := seenVars[v.Name]; exists {
 				errs = append(errs, &ValidationError{
@@ -581,6 +600,17 @@ func validateTestCase(tc *TestCase, index int, root ast.Node) []error {
 
 	if tc.Name == "" {
 		field := fmt.Sprintf("tests[%d].name", index)
+		errs = append(errs, &ValidationError{
+			Field:    field,
+			Message:  "is required",
+			Position: nodePosition(resolveNodePath(root, field)),
+		})
+	}
+
+	// Input is required per the spec; an omitted or null value yields a nil map.
+	// An empty mapping (input: {}) is a deliberate no-field event and is allowed.
+	if tc.Input == nil {
+		field := fmt.Sprintf("tests[%d].input", index)
 		errs = append(errs, &ValidationError{
 			Field:    field,
 			Message:  "is required",

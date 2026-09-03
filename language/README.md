@@ -93,7 +93,13 @@ Positions are resolved via a dual-parse approach: YAML is parsed once into struc
 ```go
 cfg, err := language.Parse(yamlBytes)
 if err != nil {
-    // err is (or joins) *language.ValidationError values
+    // Parse reports syntax errors only (malformed YAML, unknown version).
 }
-// cfg is a validated *MappingConfig ready to hand to mapper.Compile
+
+// Parse does not validate. Run Validate to check the mapping is well-formed;
+// it returns (or joins) *language.ValidationError values.
+if err := cfg.Validate(); err != nil {
+    // Inspect the validation errors.
+}
+// cfg is now validated and ready to hand to mapper.Compile.
 ```

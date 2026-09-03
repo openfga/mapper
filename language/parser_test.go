@@ -844,6 +844,8 @@ func TestParseMappingVariablesSpecialCharacters(t *testing.T) {
 		expectOK bool
 	}{
 		{
+			// Names must be Expr identifiers; a space makes the name
+			// unreferenceable via variables.<name>, so validation rejects it.
 			name: "quoted key with spaces",
 			yaml: `
 version: "1"
@@ -855,9 +857,10 @@ rules:
       - user: "u:x"
         relation: "r"
         object: "o:x"`,
-			expectOK: true,
+			expectOK: false,
 		},
 		{
+			// Dots and hyphens are not valid identifier characters.
 			name: "quoted key with special chars",
 			yaml: `
 version: "1"
@@ -870,7 +873,7 @@ rules:
       - user: "u:x"
         relation: "r"
         object: "o:x"`,
-			expectOK: true,
+			expectOK: false,
 		},
 		{
 			name: "bare key with underscores and numbers",
@@ -2359,4 +2362,114 @@ rules:
 		}
 	}
 	assert.True(t, found, "expected validation error about condition on delete tuples, got: %v", verrs)
+}
+
+// ---------------------------------------------------------------------------
+// Regression tests for review findings (multi-doc, test input, variable names)
+// ---------------------------------------------------------------------------
+
+func TestParseMappingRejectsMultipleDocuments(t *testing.T) {
+	t.Parallel()
+	input := []byte(`version: "1"
+rules:
+  - name: "first"
+    tuples:
+      - user: "u:x"
+        relation: "r"
+        object: "o:x"
+---
+version: "1"
+rules:
+  - name: "second"
+    tuples:
+      - user: "u:y"
+        relation: "r"
+        object: "o:y"
+`)
+	_, err := parseMapping(input)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "multiple YAML documents")
+}
+
+func TestValidateTestCaseInputRequired(t *testing.T) {
+	t.Parallel()
+	input := []byte(`version: "1"
+rules:
+  - name: "r"
+    tuples:
+      - user: "u:x"
+        relation: "r"
+        object: "o:x"
+tests:
+  - name: "missing input"
+    expect_tuples:
+      - user: "u:x"
+        relation: "r"
+        object: "o:x"
+`)
+	config, err := parseMapping(input)
+	require.NoError(t, err)
+
+	err = config.Validate()
+	require.Error(t, err)
+	verrs := allValidationErrors(err)
+	var found bool
+	for _, ve := range verrs {
+		if strings.Contains(ve.Field, "tests[0].input") && strings.Contains(ve.Message, "is required") {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected tests[0].input is required error, got: %v", verrs)
+}
+
+func TestValidateTestCaseEmptyInputAllowed(t *testing.T) {
+	t.Parallel()
+	input := []byte(`version: "1"
+rules:
+  - name: "r"
+    tuples:
+      - user: "u:x"
+        relation: "r"
+        object: "o:x"
+tests:
+  - name: "empty input"
+    input: {}
+    expect_tuples:
+      - user: "u:x"
+        relation: "r"
+        object: "o:x"
+`)
+	config, err := parseMapping(input)
+	require.NoError(t, err)
+	require.NoError(t, config.Validate())
+}
+
+func TestValidateVariableNameMustBeIdentifier(t *testing.T) {
+	t.Parallel()
+	input := []byte(`version: "1"
+rules:
+  - name: "r"
+    variables:
+      "user.email": "input.data.email"
+    tuples:
+      - user: "u:x"
+        relation: "r"
+        object: "o:x"
+`)
+	config, err := parseMapping(input)
+	require.NoError(t, err)
+
+	err = config.Validate()
+	require.Error(t, err)
+	verrs := allValidationErrors(err)
+	var found bool
+	for _, ve := range verrs {
+		if strings.Contains(ve.Field, "variables") && strings.Contains(ve.Message, "invalid variable name") {
+			found = true
+			assert.True(t, ve.Position.StartLine > 0, "invalid name error should carry a position")
+			break
+		}
+	}
+	assert.True(t, found, "expected invalid variable name error, got: %v", verrs)
 }
