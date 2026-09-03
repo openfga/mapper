@@ -25,6 +25,11 @@ jobs:
       # Required while the repository is private.
       contents: read
       actions: read
+      # A job-level permissions block resets unlisted scopes to none; grant the
+      # reads Scorecard needs for complete Code-Review/Maintained/CI-Tests results.
+      issues: read
+      pull-requests: read
+      checks: read
 
     steps:
       - name: Harden the runner (Audit all outbound calls)
