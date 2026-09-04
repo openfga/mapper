@@ -58,20 +58,41 @@ func (e *EvalError) Unwrap() error {
 	return e.Err
 }
 
-// Conflict describes a write/delete conflict on a single (User, Relation, Object) key.
+// Conflict describes an unsatisfiable set of desired states on a single
+// (User, Relation, Object) key.
 type Conflict struct {
 	User     string
 	Relation string
 	Object   string
 }
 
-// ConflictError represents a runtime write/delete conflict returned as an error.
+// ConflictKind classifies why a set of desired states on one URO cannot be
+// satisfied in a single OpenFGA Write batch.
+type ConflictKind int
+
+const (
+	// ConflictWriteDelete is a write and a delete targeting the same URO.
+	ConflictWriteDelete ConflictKind = iota
+	// ConflictCompetingWrites is two writes on the same URO whose condition or
+	// context differ, i.e. two incompatible desired states for one relationship.
+	ConflictCompetingWrites
+)
+
+// ConflictError represents a runtime conflict on a single relationship (URO).
+// OpenFGA identifies a relationship by (user, relation, object) only, so any
+// URO carrying more than one incompatible desired state produces an invalid
+// Write batch and is rejected here instead.
 type ConflictError struct {
 	Conflict
-	Condition string // non-empty when the conflicting tuple has a condition
+	Condition string // write/delete conflicts: the write tuple's condition, if any
+	Kind      ConflictKind
 }
 
 func (e *ConflictError) Error() string {
+	if e.Kind == ConflictCompetingWrites {
+		return fmt.Sprintf("conflict: tuple (%s, %s, %s) has competing write actions with differing condition or context",
+			e.User, e.Relation, e.Object)
+	}
 	if e.Condition != "" {
 		return fmt.Sprintf("conflict: tuple (%s, %s, %s) with condition %q has both a write and a delete action",
 			e.User, e.Relation, e.Object, e.Condition)
@@ -94,65 +115,52 @@ type PostProcessResult struct {
 	Conflicts     []Conflict       // all write/delete conflicts detected (empty if none)
 }
 
-// tupleConflictKey returns a string key for conflict detection and dedup: Key() with action stripped.
-// Two tuples with the same user/relation/object/condition/context but different actions share a key,
-// allowing conflict detection across write and delete.
-func tupleConflictKey(t language.Tuple) string {
-	t.Action = ""
-	return t.Key()
+// uroKey returns a key identifying a relationship by (user, relation, object)
+// only — OpenFGA's notion of relationship identity. Condition and context are
+// payload, not identity.
+func uroKey(t language.Tuple) string {
+	k := language.Tuple{User: t.User, Relation: t.Relation, Object: t.Object}
+	return k.Key()
 }
 
-// postProcess deduplicates result tuples in place and detects write/delete conflicts in a single pass.
-// Uses a map keyed by full tuple identity (user, relation, object, condition, context) to track both
-// dedup and conflict state. Tuples with different conditions on the same (user, relation, object)
-// are treated as distinct and do not conflict.
-// Dedup: first occurrence of each (key, action) pair retained, order preserved, backing array reused.
-// Conflicts: all keys with both write and delete are collected.
-// When tracing is enabled, all metadata is stored on Trace.PostProcess and all conflicts are collected.
-// When tracing is disabled, returns immediately on the first conflict (fast path).
+// postProcess deduplicates result tuples in place and detects conflicts in a single pass.
+// A relationship is identified by its (user, relation, object) triple, matching how
+// OpenFGA stores tuples and validates a Write batch. Two desired states on the same URO
+// that cannot both be satisfied in one batch are conflicts:
+//   - a write and a delete on the same URO (ConflictWriteDelete);
+//   - two writes on the same URO whose condition or context differ (ConflictCompetingWrites).
+//
+// Dedup: exact-identity duplicates (including condition and context) collapse to the first,
+// as do repeated deletes on the same URO; order is preserved and the backing array reused.
+// When tracing is enabled, all metadata is stored on Trace.PostProcess and all conflicts are
+// collected. When tracing is disabled, returns immediately on the first conflict (fast path).
 // Returns the first conflict as a *ConflictError, or nil.
 func (r *Result) postProcess() error {
 	tracing := r.Trace != nil
 
-	type keyState struct {
-		hasWrite  bool
-		hasDelete bool
+	type uroState struct {
+		hasWrite   bool
+		writeTuple language.Tuple
+		hasDelete  bool
 	}
 
-	seen := make(map[string]keyState, len(r.Tuples))
-	seenTuples := make(map[string]language.Tuple, len(r.Tuples))
+	seenFull := make(map[string]struct{}, len(r.Tuples))
+	states := make(map[string]*uroState, len(r.Tuples))
 
 	var removed []language.Tuple
-	var conflictKeys []string
 	var conflicts []Conflict
+	var firstConflictErr *ConflictError
+
+	recordConflict := func(ce *ConflictError) {
+		if firstConflictErr == nil {
+			firstConflictErr = ce
+		}
+		conflicts = append(conflicts, ce.Conflict)
+	}
 
 	w := 0
 	for _, t := range r.Tuples {
-		ck := tupleConflictKey(t)
-		s := seen[ck]
-
-		switch t.Action {
-		case language.ActionWrite:
-			if s.hasWrite {
-				if tracing {
-					removed = append(removed, t)
-				}
-				continue
-			}
-			s.hasWrite = true
-			seenTuples[ck] = t
-		case language.ActionDelete:
-			if s.hasDelete {
-				if tracing {
-					removed = append(removed, t)
-				}
-				continue
-			}
-			s.hasDelete = true
-			if _, ok := seenTuples[ck]; !ok {
-				seenTuples[ck] = t
-			}
-		default:
+		if t.Action != language.ActionWrite && t.Action != language.ActionDelete {
 			r.Tuples = r.Tuples[:w]
 			return &language.ValidationError{
 				Field:   fmt.Sprintf("(%s, %s, %s)", t.User, t.Relation, t.Object),
@@ -160,19 +168,68 @@ func (r *Result) postProcess() error {
 			}
 		}
 
-		seen[ck] = s
-		r.Tuples[w] = t
-		w++
+		fullKey := t.Key()
+		if _, dup := seenFull[fullKey]; dup {
+			if tracing {
+				removed = append(removed, t)
+			}
+			continue
+		}
 
-		if s.hasWrite && s.hasDelete {
-			ct := seenTuples[ck]
+		uk := uroKey(t)
+		st := states[uk]
+		if st == nil {
+			st = &uroState{}
+			states[uk] = st
+		}
+
+		conflict := Conflict{User: t.User, Relation: t.Relation, Object: t.Object}
+		var ce *ConflictError
+		switch t.Action {
+		case language.ActionWrite:
+			switch {
+			case st.hasDelete:
+				ce = &ConflictError{Conflict: conflict, Condition: t.Condition, Kind: ConflictWriteDelete}
+			case st.hasWrite:
+				// Distinct from the stored write (an identical one is caught by seenFull),
+				// so this is a second, incompatible desired state for the same relationship.
+				ce = &ConflictError{Conflict: conflict, Kind: ConflictCompetingWrites}
+			}
+		case language.ActionDelete:
+			switch {
+			case st.hasWrite:
+				ce = &ConflictError{Conflict: conflict, Condition: st.writeTuple.Condition, Kind: ConflictWriteDelete}
+			case st.hasDelete:
+				// A delete targets a relationship by URO regardless of condition, so a
+				// second delete on the same URO is a duplicate.
+				if tracing {
+					removed = append(removed, t)
+				}
+				continue
+			}
+		}
+
+		if ce != nil {
 			if !tracing {
 				r.Tuples = r.Tuples[:w]
-				return &ConflictError{Conflict: Conflict{User: ct.User, Relation: ct.Relation, Object: ct.Object}, Condition: ct.Condition}
+				return ce
 			}
-			conflictKeys = append(conflictKeys, ck)
-			conflicts = append(conflicts, Conflict{User: ct.User, Relation: ct.Relation, Object: ct.Object})
+			recordConflict(ce)
 		}
+
+		switch t.Action {
+		case language.ActionWrite:
+			if !st.hasWrite {
+				st.hasWrite = true
+				st.writeTuple = t
+			}
+		case language.ActionDelete:
+			st.hasDelete = true
+		}
+
+		seenFull[fullKey] = struct{}{}
+		r.Tuples[w] = t
+		w++
 	}
 	r.Tuples = r.Tuples[:w]
 
@@ -189,9 +246,8 @@ func (r *Result) postProcess() error {
 		}
 	}
 
-	if len(conflicts) > 0 {
-		ct := seenTuples[conflictKeys[0]]
-		return &ConflictError{Conflict: conflicts[0], Condition: ct.Condition}
+	if firstConflictErr != nil {
+		return firstConflictErr
 	}
 	return nil
 }

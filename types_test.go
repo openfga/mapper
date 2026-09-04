@@ -90,21 +90,9 @@ func TestConflictErrorMessage(t *testing.T) {
 	})
 }
 
-func TestPostProcess_ConditionAwareDedup(t *testing.T) {
+func TestPostProcess_URODedup(t *testing.T) {
 	t.Parallel()
-	t.Run("two writes with same user/rel/obj but different conditions are both kept", func(t *testing.T) {
-		r := &Result{
-			Tuples: []language.Tuple{
-				{User: "u:1", Relation: "viewer", Object: "doc:x", Action: language.ActionWrite, Condition: "cond_a"},
-				{User: "u:1", Relation: "viewer", Object: "doc:x", Action: language.ActionWrite, Condition: "cond_b"},
-			},
-		}
-		err := r.postProcess()
-		require.NoError(t, err)
-		assert.Len(t, r.Tuples, 2)
-	})
-
-	t.Run("duplicate writes with same full identity are deduplicated", func(t *testing.T) {
+	t.Run("duplicate writes with identical identity are deduplicated", func(t *testing.T) {
 		r := &Result{
 			Tuples: []language.Tuple{
 				{User: "u:1", Relation: "viewer", Object: "doc:x", Action: language.ActionWrite, Condition: "cond_a"},
@@ -115,11 +103,55 @@ func TestPostProcess_ConditionAwareDedup(t *testing.T) {
 		require.NoError(t, err)
 		assert.Len(t, r.Tuples, 1)
 	})
+
+	t.Run("duplicate deletes on the same URO are deduplicated", func(t *testing.T) {
+		r := &Result{
+			Tuples: []language.Tuple{
+				{User: "u:1", Relation: "viewer", Object: "doc:x", Action: language.ActionDelete},
+				{User: "u:1", Relation: "viewer", Object: "doc:x", Action: language.ActionDelete},
+			},
+		}
+		err := r.postProcess()
+		require.NoError(t, err)
+		assert.Len(t, r.Tuples, 1)
+	})
 }
 
-func TestPostProcess_ConditionAwareConflict(t *testing.T) {
+func TestPostProcess_UROConflict(t *testing.T) {
 	t.Parallel()
-	t.Run("write and delete with different conditions on same user/rel/obj is not a conflict", func(t *testing.T) {
+	// OpenFGA identifies a relationship by (user, relation, object); condition and
+	// context are payload, not identity. Two competing writes on one URO, or a
+	// write and a delete on one URO, cannot both be sent in a single Write batch.
+
+	t.Run("two writes on same URO with different conditions conflict", func(t *testing.T) {
+		r := &Result{
+			Tuples: []language.Tuple{
+				{User: "u:1", Relation: "viewer", Object: "doc:x", Action: language.ActionWrite, Condition: "cond_a"},
+				{User: "u:1", Relation: "viewer", Object: "doc:x", Action: language.ActionWrite, Condition: "cond_b"},
+			},
+		}
+		err := r.postProcess()
+		require.Error(t, err)
+		var ce *ConflictError
+		require.ErrorAs(t, err, &ce)
+		assert.Equal(t, ConflictCompetingWrites, ce.Kind)
+	})
+
+	t.Run("two writes on same URO with different context conflict", func(t *testing.T) {
+		r := &Result{
+			Tuples: []language.Tuple{
+				{User: "u:1", Relation: "viewer", Object: "doc:x", Action: language.ActionWrite, Condition: "c", Context: map[string]any{"region": "us"}},
+				{User: "u:1", Relation: "viewer", Object: "doc:x", Action: language.ActionWrite, Condition: "c", Context: map[string]any{"region": "eu"}},
+			},
+		}
+		err := r.postProcess()
+		require.Error(t, err)
+		var ce *ConflictError
+		require.ErrorAs(t, err, &ce)
+		assert.Equal(t, ConflictCompetingWrites, ce.Kind)
+	})
+
+	t.Run("write and delete on same URO with different conditions conflict", func(t *testing.T) {
 		r := &Result{
 			Tuples: []language.Tuple{
 				{User: "u:1", Relation: "viewer", Object: "doc:x", Action: language.ActionWrite, Condition: "cond_new"},
@@ -127,11 +159,13 @@ func TestPostProcess_ConditionAwareConflict(t *testing.T) {
 			},
 		}
 		err := r.postProcess()
-		require.NoError(t, err)
-		assert.Len(t, r.Tuples, 2)
+		require.Error(t, err)
+		var ce *ConflictError
+		require.ErrorAs(t, err, &ce)
+		assert.Equal(t, ConflictWriteDelete, ce.Kind)
 	})
 
-	t.Run("write and delete with same full identity is a conflict", func(t *testing.T) {
+	t.Run("write and delete with same condition is a conflict", func(t *testing.T) {
 		r := &Result{
 			Tuples: []language.Tuple{
 				{User: "u:1", Relation: "viewer", Object: "doc:x", Action: language.ActionWrite, Condition: "cond_a"},
@@ -142,10 +176,11 @@ func TestPostProcess_ConditionAwareConflict(t *testing.T) {
 		require.Error(t, err)
 		var ce *ConflictError
 		require.ErrorAs(t, err, &ce)
+		assert.Equal(t, ConflictWriteDelete, ce.Kind)
 		assert.Equal(t, "cond_a", ce.Condition)
 	})
 
-	t.Run("write and delete without condition on same user/rel/obj is still a conflict", func(t *testing.T) {
+	t.Run("write and delete without condition is a conflict", func(t *testing.T) {
 		r := &Result{
 			Tuples: []language.Tuple{
 				{User: "u:1", Relation: "viewer", Object: "doc:x", Action: language.ActionWrite},
@@ -156,6 +191,7 @@ func TestPostProcess_ConditionAwareConflict(t *testing.T) {
 		require.Error(t, err)
 		var ce *ConflictError
 		require.ErrorAs(t, err, &ce)
+		assert.Equal(t, ConflictWriteDelete, ce.Kind)
 		assert.Empty(t, ce.Condition)
 	})
 }
