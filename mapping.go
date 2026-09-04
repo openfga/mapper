@@ -356,6 +356,24 @@ func (m *Mapping) Evaluate(ctx context.Context, event map[string]any) (*Result, 
 		}
 	}
 
+	// Track the distinct tuples rendered so far so a runaway iterator is stopped
+	// as soon as it exceeds maxTuples, rather than after materializing the whole
+	// source. Keyed by full identity, the distinct count never exceeds the final
+	// post-dedup total, so this only fires when the final check would also fail.
+	seenForBudget := make(map[string]struct{})
+	checkBudget := func(batch []language.Tuple) error {
+		for _, t := range batch {
+			seenForBudget[t.Key()] = struct{}{}
+		}
+		if n := len(seenForBudget); n > m.maxTuples {
+			return &EvalError{
+				Expression: "maxTuples",
+				Err:        fmt.Errorf("event produced %d tuples, exceeding limit of %d", n, m.maxTuples),
+			}
+		}
+		return nil
+	}
+
 	for _, cr := range m.rules {
 		// Check deadline before each rule
 		if err := ctx.Err(); err != nil {
@@ -431,6 +449,10 @@ func (m *Mapping) Evaluate(ctx context.Context, event map[string]any) (*Result, 
 					return result, fmt.Errorf("rule %q iterator.tuples: %w", cr.name, err)
 				}
 				ruleTuples = append(ruleTuples, batch...)
+				if err := checkBudget(batch); err != nil {
+					m.recordRuleError(result, cr.name, err, start)
+					return result, err
+				}
 			}
 
 			// Static tuples (optional; evaluated once with no iterItem)
@@ -441,6 +463,10 @@ func (m *Mapping) Evaluate(ctx context.Context, event map[string]any) (*Result, 
 					return result, fmt.Errorf("rule %q tuples: %w", cr.name, err)
 				}
 				ruleTuples = append(ruleTuples, batch...)
+				if err := checkBudget(batch); err != nil {
+					m.recordRuleError(result, cr.name, err, start)
+					return result, err
+				}
 			}
 		} else if len(cr.tuples) > 0 {
 			batch, err := evaluateRuleTuples(ctx, cr.tuples, event, variables, nil)
@@ -449,6 +475,10 @@ func (m *Mapping) Evaluate(ctx context.Context, event map[string]any) (*Result, 
 				return result, fmt.Errorf("rule %q tuples: %w", cr.name, err)
 			}
 			ruleTuples = append(ruleTuples, batch...)
+			if err := checkBudget(batch); err != nil {
+				m.recordRuleError(result, cr.name, err, start)
+				return result, err
+			}
 		}
 
 		// Route output: tuple_filters rules produce TupleFilterOperations,

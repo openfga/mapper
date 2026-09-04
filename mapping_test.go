@@ -1809,6 +1809,41 @@ rules:
 	assert.Contains(t, err.Error(), "exceeding limit of 2")
 }
 
+func TestEvaluateIteratorMaxTuplesStopsEarly(t *testing.T) {
+	t.Parallel()
+	// With maxTuples=2 and an iterator source of 5 distinct items, enforcement
+	// must stop as soon as the distinct count exceeds the limit, reporting
+	// maxTuples+1 (3) rather than rendering the entire source and reporting 5.
+	compiler := NewCompiler(WithMaxTuples(2), WithMaxIteratorItems(100))
+
+	yaml := []byte(`
+version: "1"
+rules:
+  - name: "roles"
+    iterator:
+      source: "input.roles"
+      as: "role"
+      tuples:
+        - user: "user:{{role }}"
+          relation: "admin"
+          object: "org:acme"
+`)
+
+	mapping, err := compiler.Compile(yaml)
+	require.NoError(t, err)
+
+	result, err := mapping.Evaluate(context.Background(), map[string]any{
+		"roles": []any{"a", "b", "c", "d", "e"},
+	})
+	require.Error(t, err)
+	require.NotNil(t, result)
+	var evalErr *EvalError
+	require.True(t, errors.As(err, &evalErr))
+	assert.Equal(t, "maxTuples", evalErr.Expression)
+	assert.Contains(t, err.Error(), "produced 3 tuples")
+	assert.Contains(t, err.Error(), "exceeding limit of 2")
+}
+
 func TestEvaluateIteratorWithVariablesFromArray(t *testing.T) {
 	t.Parallel()
 	compiler := NewCompiler(WithTrace(true))
