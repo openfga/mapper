@@ -58,9 +58,9 @@ func evaluateIteratorSource(
 		return arr, nil
 	}
 
-	// Handle other slice types via reflection
+	// Handle other slice and array types via reflection
 	val := reflect.ValueOf(result)
-	if val.Kind() == reflect.Slice {
+	if val.Kind() == reflect.Slice || val.Kind() == reflect.Array {
 		length := val.Len()
 		if length > maxItems {
 			return nil, &EvalError{

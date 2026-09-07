@@ -1696,6 +1696,35 @@ rules:
 	assert.Contains(t, err.Error(), "iterator source must be an array")
 }
 
+func TestEvaluateIteratorArraySource(t *testing.T) {
+	t.Parallel()
+	compiler := NewCompiler()
+
+	yaml := []byte(`
+version: "1"
+rules:
+  - name: "array source"
+    iterator:
+      source: "input.names"
+      as: "name"
+      tuples:
+        - user: "user:{{ name }}"
+          relation: "member"
+          object: "org:acme"
+`)
+
+	mapping, err := compiler.Compile(yaml)
+	require.NoError(t, err)
+
+	result, err := mapping.Evaluate(context.Background(), map[string]any{
+		"names": [2]string{"alice", "bob"},
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Tuples, 2)
+	assert.Equal(t, "user:alice", result.Tuples[0].User)
+	assert.Equal(t, "user:bob", result.Tuples[1].User)
+}
+
 func TestEvaluateIteratorWithVariables(t *testing.T) {
 	t.Parallel()
 	compiler := NewCompiler(WithTrace(true))
