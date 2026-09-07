@@ -33,8 +33,8 @@ type ValidationError = language.ValidationError
 // One per rule that has tuple_filters. The consumer uses these to drive read-diff-write
 // against FGA.
 type TupleFilterOperation struct {
-	Filters []language.TupleFilter `json:"filters"`
-	Tuples  []language.Tuple       `json:"tuples"`
+	Filters []TupleFilter `json:"filters"`
+	Tuples  []Tuple       `json:"tuples"`
 }
 
 // EvalError represents an Expr expression evaluation error.
@@ -103,7 +103,7 @@ func (e *ConflictError) Error() string {
 
 // Result is the output of Mapping.Evaluate.
 type Result struct {
-	Tuples                []language.Tuple       `json:"tuples"`
+	Tuples                []Tuple                `json:"tuples"`
 	TupleFilterOperations []TupleFilterOperation `json:"tuple_filter_operations,omitempty"`
 	Trace                 *Trace                 `json:"trace,omitempty"` // nil unless tracing is enabled on the Compiler
 }
@@ -111,8 +111,8 @@ type Result struct {
 // PostProcessResult holds metadata from tuple post-processing (dedup + conflict detection).
 // Populated on the Trace only when tracing is enabled.
 type PostProcessResult struct {
-	RemovedTuples []language.Tuple // the duplicate tuples that were removed
-	Conflicts     []Conflict       // all write/delete conflicts detected (empty if none)
+	RemovedTuples []Tuple    // the duplicate tuples that were removed
+	Conflicts     []Conflict // all write/delete conflicts detected (empty if none)
 }
 
 // uroKey returns a key identifying a relationship by (user, relation, object)
