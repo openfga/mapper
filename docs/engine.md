@@ -281,14 +281,15 @@ Compile-time errors carry `Field` (the tuple field name, e.g. `"user"`) and a `P
 
 ### ConflictError Scenarios
 
-`ConflictError` is produced by `postProcess()` (`types.go`) after deduplication, when the same identity key has both a `write` and a `delete` action:
+`ConflictError` is produced by `postProcess()` (`types.go`) after deduplication. OpenFGA identifies a stored relationship by its `(user, relation, object)` triple — condition and context are payload, not identity — so a single URO carrying more than one incompatible desired state cannot be expressed in one Write batch and is rejected. The `Kind` field distinguishes the two cases.
 
-| Scenario | Example Message |
-|----------|------------------|
-| Write + delete on the same (user, relation, object), no condition | `conflict: tuple (u:1, r, o:1) has both a write and a delete action` |
-| Write + delete on the same (user, relation, object), same condition | `conflict: tuple (u:1, viewer, doc:x) with condition "my_cond" has both a write and a delete action` |
+| Scenario | `Kind` | Example Message |
+|----------|--------|------------------|
+| Write + delete on the same (user, relation, object), no condition | `ConflictWriteDelete` | `conflict: tuple (u:1, r, o:1) has both a write and a delete action` |
+| Write + delete on the same URO, write carries a condition | `ConflictWriteDelete` | `conflict: tuple (u:1, viewer, doc:x) with condition "my_cond" has both a write and a delete action` |
+| Two writes on the same URO whose condition or context differ | `ConflictCompetingWrites` | `conflict: tuple (u:1, viewer, doc:x) has competing write actions with differing condition or context` |
 
-Condition is part of the identity key used for deduplication and conflict detection: a `write` with one condition and a `delete` with a *different* condition (or no condition) on the same (user, relation, object) are treated as distinct tuples and do **not** conflict — this is why changing a tuple's condition requires an explicit delete+write rather than relying on conflict detection to catch it.
+A `write` and a `delete` on the same URO conflict regardless of whether their conditions match, since a Write batch cannot both add and remove the same relationship. Two writes on the same URO with identical condition and context deduplicate to one; if their condition or context differ they are competing desired states and conflict. Repeated deletes on the same URO likewise deduplicate. This means changing a tuple's condition is a genuine conflict, not a silently-distinct tuple — the mapping must express it as an explicit delete followed by a write.
 
 ## Diagnostics
 
@@ -305,16 +306,16 @@ text := diags.String()                // grouped human-readable output
 
 ## Agent conventions
 
-- **TupleFilterOperation:** Groups a rule's rendered `[]language.TupleFilter` with its desired-state `[]language.Tuple`. One per rule that has `tuple_filters`. The consumer uses these to drive read-diff-write against FGA.
+- **TupleFilterOperation:** Groups a rule's rendered `[]TupleFilter` with its desired-state `[]Tuple`. One per rule that has `tuple_filters`. The consumer uses these to drive read-diff-write against FGA.
 - **Evaluation order:** `when` guard evaluated before variables. Rule-level when guards only have `input` in scope; direct `variables` member access is rejected at compile time via `hasVariablesRef()`. Tuple-level when guards retain access to both `input` and `variables`.
 - **Expression compilation:** All expressions compiled at `Compile()` time; variable forward references caught via `checkForwardRefs()`; when guard and interpolation expressions compiled with `AllowUndefinedVariables` since event shape is dynamic.
 - **Tuple context:** Context values are compiled as interpolations via `compileInterpField()`.
 
 ## Design Decisions
 
-### Why compile variables at evaluation time?
+### Why evaluate variables in declaration order?
 
-Variable expressions are compiled during `Evaluate()`, not during `Compiler.Compile()`, because the available variable names grow with each variable. Variable B can reference variable A, so A must be in scope when we compile B.
+All expressions, variables included, are compiled once during `Compiler.Compile()`. Variables are then *evaluated* in declaration order during `Evaluate()`: each variable's value is added to scope before the next runs, so variable B can reference variable A. Forward references (B referencing a later-declared C) are rejected at compile time by `checkForwardRefs()` rather than silently evaluating to `nil`.
 
 ### Why use `AllowUndefinedVariables`?
 
