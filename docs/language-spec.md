@@ -131,17 +131,16 @@ A rule with `tuple_filters` declares that the rule operates on existing FGA tupl
         object: 'org:{{ input.org_id }}'
 ```
 
-A tuple filter is a partial-key query that maps to the [FGA Read API](https://openfga.dev/docs/api/service#/Relationships/Read). Any combination of `user`, `relation`, and `object` can be set; unset fields act as wildcards. Supported patterns:
+A tuple filter is a partial-key query that maps to the [FGA Read API](https://openfga.dev/docs/api/service#/Relationships/Read). `object` is required (at least an object type prefix, since FGA's Read API needs an object type); `user` and `relation` are optional and act as wildcards when unset. Supported patterns:
 
 | Filter Fields | Matches | Example |
 |---------------|---------|---------|
 | `relation` + `object` | All users with this relation to this object | `relation: member, object: org:123` |
-| `user` + `relation` | All objects where this user has this relation | `user: user:alice, relation: member` |
 | `user` + `object` | All relations between this user and object | `user: user:alice, object: org:123` |
+| `user` + `object` type prefix | All of a user's relations to a resource type | `user: user:alice, object: 'org:'` |
 | `user` + `relation` + `object` type prefix | All of a user's relations to a resource type | `user: user:alice, relation: member, object: 'org:'` |
 | `object` only | All relations on this object | `object: org:123` |
 | `object` type prefix only | All tuples for a resource type | `object: 'org:'` |
-| `user` only | All relations involving this user | `user: user:alice` |
 
 #### Tuple Filter Field Reference
 
@@ -155,12 +154,12 @@ Each tuple filter supports:
 |-------|------|-------------|
 | `user` | string | Interpolated string for the user URN. Optional; omit to match all users. |
 | `relation` | string | Interpolated string for the relation name. Optional; omit to match all relations. |
-| `object` | string | Interpolated string for the object URN. Optional; omit to match all objects. Object type prefixes (e.g., `org:`) are valid and match all objects of that type. |
+| `object` | string | Interpolated string for the object URN. **Required** — set it to at least an object type prefix (e.g., `org:`), since FGA's Read API needs an object type. A type prefix matches all objects of that type. |
 | `action` | string | `"patch"` (default) or `"delete"`. `patch` diffs desired-state tuples against FGA and writes the delta. `delete` removes everything matching the filter from FGA. |
 
 **Constraints:**
 - At least one filter required in `tuple_filters`; empty lists are rejected at validation time.
-- Each filter must have at least one field set (user, relation, or object).
+- Each filter must set `object` to at least an object type prefix (e.g., `org:`). FGA's Read API requires an object type, so a filter with no object can never match — it is rejected at validation time rather than deferred to a failed read. `user` and `relation` are optional.
 - A filter with all three fields set to specific, concrete values (e.g., `user: user:alice, relation: member, object: org:123`) is rejected — that describes a single tuple, not a range of tuples; use tuple-level `action: write`/`action: delete` instead. A filter is valid when any field uses an object type prefix (e.g., `object: org:`), even if all three fields are set, since a type prefix matches multiple objects.
 - If all filters in a rule have `action: delete`, the rule must not define any tuple templates — `delete` means "remove everything matching", so defining desired-state tuples is contradictory. This is a structural check: if the rule's YAML contains `tuples` (at rule level or in an iterator), it is rejected with a `ValidationError` at parse time regardless of whether those tuples would produce output at runtime.
 - If any filter has `action: patch`, the rule must produce at least one tuple. When the rule has no iterator and no rule-level tuple templates, this is a structural guarantee of zero tuples and is rejected at parse time with a `ValidationError`. When tuple count depends on runtime factors (iterator source length, tuple-level when guards), this is an eval-time check — the engine produces the tuple filter operation with zero tuples and the consumer fails before reading from FGA (fail fast).

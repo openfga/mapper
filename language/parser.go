@@ -513,11 +513,13 @@ func validateTupleFilters(rule *Rule, displayPrefix, lookupPrefix string, root a
 		filterDisplay := fmt.Sprintf("%s.tuple_filters[%d]", displayPrefix, j)
 		filterLookup := fmt.Sprintf("%s.tuple_filters[%d]", lookupPrefix, j)
 
-		// At least one field set
-		if f.User == "" && f.Relation == "" && f.Object == "" {
+		// Object is required. FGA's Read API mandates an object type (the object
+		// id may be empty, the type may not), so a filter with no object can never
+		// match at runtime — reject it here instead of deferring to a failed Read.
+		if f.Object == "" {
 			errs = append(errs, &ValidationError{
-				Field:    filterDisplay,
-				Message:  "must have at least one field set (user, relation, or object)",
+				Field:    filterDisplay + ".object",
+				Message:  `must be set to at least an object type prefix (e.g. "document:")`,
 				Position: nodePosition(resolveNodePath(root, filterLookup)),
 			})
 		}

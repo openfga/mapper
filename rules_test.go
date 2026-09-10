@@ -17,6 +17,7 @@ rules:
     tuple_filters:
       - user: "user:{{ input.id }}"
         relation: "member"
+        object: "org:{{ input.id }}"
     iterator:
       source: input.roles
       as: role
@@ -61,7 +62,7 @@ rules:
 	require.Len(t, r.TupleFilters, 1)
 	assert.Equal(t, "user:{{ input.id }}", r.TupleFilters[0].User)
 	assert.Equal(t, "member", r.TupleFilters[0].Relation)
-	assert.Empty(t, r.TupleFilters[0].Object)
+	assert.Equal(t, "org:{{ input.id }}", r.TupleFilters[0].Object)
 }
 
 // TestRulesContextIsDeepCopied asserts the Rules() contract: mutating a returned
