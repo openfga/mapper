@@ -21,7 +21,7 @@ Adding a new version: create `parse_vN.go`, add a case to the version switch in 
 - **Variables YAML format:** YAML mapping (not list) with order preserved via custom `UnmarshalYAML`.
 - **TupleAction:** `"write"` (default) or `"delete"` — validated at parse time.
 - **TupleFilterAction:** `"patch"` (default) or `"delete"` — separate type from `TupleAction` since semantics differ (patch/delete operate on FGA read results, not individual tuples).
-- **ParsedTupleFilter:** YAML input for a tuple filter. `User`, `Relation`, `Object` are optional interpolated strings; `Action` defaults to `"patch"`. Validated to have at least one field set; all-concrete (non-interpolated, non-type-prefix) three-field filters are rejected.
+- **ParsedTupleFilter:** YAML input for a tuple filter. `Object` is a required interpolated string (at least an object type prefix, since FGA's Read API needs an object type); `User` and `Relation` are optional interpolated strings; `Action` defaults to `"patch"`. All-concrete (non-interpolated, non-type-prefix) three-field filters are rejected.
 - **TupleFilter:** Rendered tuple filter (mapper output). Carries `User`, `Relation`, and `Object` fields (any may be empty to act as a wildcard) plus `Action`. Filter-level `Action` is independent of tuple-level `TupleAction`.
 - **Rule-level action:** `Rule.Action` (`"write"` or `"delete"`) propagates to all tuples during `validateRule()`, before `validateTupleTemplate()` runs. When set, tuple-level `action` is forbidden. Rule-level `action: delete` with `patch` tuple filters is a `ValidationError`.
 - **Tuple condition and context:** `ParsedTuple.Condition` (string, literal FGA condition name) and `ParsedTuple.Context` (map of interpolated strings). Validation: `context` requires `condition`; `condition` forbidden on `action: delete` tuples.
@@ -65,7 +65,7 @@ All structural checks below run during `Validate()`/parsing (`parser.go`), befor
 | Iterator missing `as` | `rules[{i}].iterator.as` | `is required` |
 | Iterator `as` shadows `input`/`variables` | `rules[{i}].iterator.as` | `iterator "as" name "input" shadows the built-in input scope; choose a different name` |
 | More than 3 tuple filters | `rules[{i}].tuple_filters` | `exceeds maximum of 3 filters` |
-| Tuple filter with no fields set | `rules[{i}].tuple_filters[{j}]` | `must have at least one field set (user, relation, or object)` |
+| Tuple filter with no `object` | `rules[{i}].tuple_filters[{j}].object` | `must be set to at least an object type prefix (e.g. "document:")` |
 | Tuple filter with all three fields concrete (no type prefix) | `rules[{i}].tuple_filters[{j}]` | `filter with all three fields set to concrete values describes a single tuple, not a range; use tuple-level action instead` |
 | Invalid tuple filter `action` | `rules[{i}].tuple_filters[{j}].action` | `invalid action "ignore" (must be "patch" or "delete")` |
 | `delete` filters combined with rule-level tuple templates | `rules[{i}].tuple_filters` | (rejected — see `validateTupleFilters()`) |

@@ -1637,20 +1637,34 @@ func TestValidateTupleFiltersMaxExceeded(t *testing.T) {
 	assert.True(t, found, "expected max filter error")
 }
 
-func TestValidateTupleFiltersAtLeastOneField(t *testing.T) {
+func TestValidateTupleFiltersObjectRequired(t *testing.T) {
 	t.Parallel()
-	rule := &Rule{
-		Name:         "test",
-		TupleFilters: []ParsedTupleFilter{{}},
+	tests := []struct {
+		name      string
+		filter    ParsedTupleFilter
+		wantError bool
+	}{
+		{name: "no fields set", filter: ParsedTupleFilter{}, wantError: true},
+		{name: "user only", filter: ParsedTupleFilter{User: "user:{{ .input.id }}", Action: FilterActionDelete}, wantError: true},
+		{name: "relation only", filter: ParsedTupleFilter{Relation: "member"}, wantError: true},
+		{name: "object type prefix", filter: ParsedTupleFilter{Object: "org:"}, wantError: false},
+		{name: "object with user", filter: ParsedTupleFilter{User: "user:alice", Object: "org:"}, wantError: false},
+		{name: "templated object", filter: ParsedTupleFilter{Object: "org:{{ .variables.id }}"}, wantError: false},
 	}
-	errs := validateTupleFilters(rule, `rules["test"]`, "rules[0]", nil)
-	var found bool
-	for _, e := range errs {
-		if strings.Contains(e.Error(), "must have at least one field set") {
-			found = true
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rule := &Rule{Name: "test", TupleFilters: []ParsedTupleFilter{tt.filter}}
+			errs := validateTupleFilters(rule, `rules["test"]`, "rules[0]", nil)
+			var found bool
+			for _, e := range errs {
+				if strings.Contains(e.Error(), "must be set to at least an object type prefix") {
+					found = true
+					assert.Contains(t, e.Error(), `rules["test"].tuple_filters[0].object`)
+				}
+			}
+			assert.Equal(t, tt.wantError, found, "object-required error mismatch")
+		})
 	}
-	assert.True(t, found, "expected at-least-one-field error")
 }
 
 func TestValidateTupleFiltersActionValidation(t *testing.T) {

@@ -37,8 +37,9 @@ const (
 	FilterActionDelete TupleFilterAction = "delete"
 )
 
-// ParsedTupleFilter is a tuple filter parsed from YAML. Fields are optional
-// interpolated strings; empty fields act as wildcards when rendered.
+// ParsedTupleFilter is a tuple filter parsed from YAML. Object is a required
+// interpolated string; User and Relation are optional interpolated strings.
+// Empty rendered fields act as wildcards.
 //
 // The *Pos fields carry the source position of each interpolated field, stamped
 // at parse time so the mapper can attach diagnostics without reaching back into
