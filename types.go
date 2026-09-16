@@ -123,46 +123,43 @@ func uroKey(t language.Tuple) string {
 	return k.Key()
 }
 
-// postProcess deduplicates result tuples in place and detects conflicts in a single pass.
-// A relationship is identified by its (user, relation, object) triple, matching how
-// OpenFGA stores tuples and validates a Write batch. Two desired states on the same URO
-// that cannot both be satisfied in one batch are conflicts:
-//   - a write and a delete on the same URO (ConflictWriteDelete);
-//   - two writes on the same URO whose condition or context differ (ConflictCompetingWrites).
+// collapseTuples deduplicates and conflict-checks tuples in a single pass,
+// reusing the tuples slice's backing array (write-pointer pattern). It
+// implements the core loop logic shared by postProcess and Collapse.
 //
-// Dedup: exact-identity duplicates (including condition and context) collapse to the first,
-// as do repeated deletes on the same URO; order is preserved and the backing array reused.
-// When tracing is enabled, all metadata is stored on Trace.PostProcess and all conflicts are
-// collected. When tracing is disabled, returns immediately on the first conflict (fast path).
-// Returns the first conflict as a *ConflictError, or nil.
-func (r *Result) postProcess() error {
-	tracing := r.Trace != nil
-
+// When collectAll is false (fast path), the function returns immediately on
+// the first ConflictError, returning the partially-collapsed prefix and the
+// error. It always returns immediately on a ValidationError regardless of
+// collectAll. When collectAll is true, all removed duplicates and all
+// conflicts are accumulated; a ValidationError still causes an early return.
+//
+// Nil-interface invariant: firstErr is always a true nil interface or a
+// non-nil concrete error value — a (*ConflictError)(nil) is never returned
+// inside the interface.
+func collapseTuples(tuples []language.Tuple, collectAll bool) (collapsed []language.Tuple, removed []language.Tuple, allConflicts []Conflict, firstErr error) {
 	type uroState struct {
 		hasWrite   bool
 		writeTuple language.Tuple
 		hasDelete  bool
 	}
 
-	seenFull := make(map[string]struct{}, len(r.Tuples))
-	states := make(map[string]*uroState, len(r.Tuples))
+	seenFull := make(map[string]struct{}, len(tuples))
+	states := make(map[string]*uroState, len(tuples))
 
-	var removed []language.Tuple
-	var conflicts []Conflict
 	var firstConflictErr *ConflictError
 
 	recordConflict := func(ce *ConflictError) {
 		if firstConflictErr == nil {
 			firstConflictErr = ce
 		}
-		conflicts = append(conflicts, ce.Conflict)
+		allConflicts = append(allConflicts, ce.Conflict)
 	}
 
 	w := 0
-	for _, t := range r.Tuples {
+	for _, t := range tuples {
 		if t.Action != language.ActionWrite && t.Action != language.ActionDelete {
-			r.Tuples = r.Tuples[:w]
-			return &language.ValidationError{
+			tuples = tuples[:w]
+			return tuples, removed, allConflicts, &language.ValidationError{
 				Field:   fmt.Sprintf("(%s, %s, %s)", t.User, t.Relation, t.Object),
 				Message: fmt.Sprintf("unknown tuple action %q", t.Action),
 			}
@@ -170,7 +167,7 @@ func (r *Result) postProcess() error {
 
 		fullKey := t.Key()
 		if _, dup := seenFull[fullKey]; dup {
-			if tracing {
+			if collectAll {
 				removed = append(removed, t)
 			}
 			continue
@@ -191,7 +188,7 @@ func (r *Result) postProcess() error {
 			case st.hasDelete:
 				ce = &ConflictError{Conflict: conflict, Condition: t.Condition, Kind: ConflictWriteDelete}
 			case st.hasWrite:
-				// Distinct from the stored write (an identical one is caught by seenFull),
+				// Distinct from the stored write (identical ones caught by seenFull),
 				// so this is a second, incompatible desired state for the same relationship.
 				ce = &ConflictError{Conflict: conflict, Kind: ConflictCompetingWrites}
 			}
@@ -202,7 +199,7 @@ func (r *Result) postProcess() error {
 			case st.hasDelete:
 				// A delete targets a relationship by URO regardless of condition, so a
 				// second delete on the same URO is a duplicate.
-				if tracing {
+				if collectAll {
 					removed = append(removed, t)
 				}
 				continue
@@ -210,9 +207,9 @@ func (r *Result) postProcess() error {
 		}
 
 		if ce != nil {
-			if !tracing {
-				r.Tuples = r.Tuples[:w]
-				return ce
+			if !collectAll {
+				tuples = tuples[:w]
+				return tuples, nil, nil, ce
 			}
 			recordConflict(ce)
 		}
@@ -228,10 +225,41 @@ func (r *Result) postProcess() error {
 		}
 
 		seenFull[fullKey] = struct{}{}
-		r.Tuples[w] = t
+		tuples[w] = t
 		w++
 	}
-	r.Tuples = r.Tuples[:w]
+
+	collapsed = tuples[:w]
+	if firstConflictErr != nil {
+		firstErr = firstConflictErr
+	}
+	return collapsed, removed, allConflicts, firstErr
+}
+
+// postProcess deduplicates result tuples in place and detects conflicts in a single pass.
+// A relationship is identified by its (user, relation, object) triple, matching how
+// OpenFGA stores tuples and validates a Write batch. Two desired states on the same URO
+// that cannot both be satisfied in one batch are conflicts:
+//   - a write and a delete on the same URO (ConflictWriteDelete);
+//   - two writes on the same URO whose condition or context differ (ConflictCompetingWrites).
+//
+// Dedup: exact-identity duplicates (including condition and context) collapse to the first,
+// as do repeated deletes on the same URO; order is preserved and the backing array reused.
+// When tracing is enabled, all metadata is stored on Trace.PostProcess and all conflicts are
+// collected. When tracing is disabled, returns immediately on the first conflict (fast path).
+// Returns the first conflict as a *ConflictError, or nil.
+func (r *Result) postProcess() error {
+	tracing := r.Trace != nil
+
+	collapsed, removed, conflicts, firstErr := collapseTuples(r.Tuples, tracing)
+	r.Tuples = collapsed
+
+	// On a ValidationError (any mode) or a ConflictError in non-tracing mode,
+	// skip TupleFilterOperations dedup — preserve the original early-exit behaviour.
+	_, isVal := firstErr.(*language.ValidationError)
+	if isVal || (firstErr != nil && !tracing) {
+		return firstErr
+	}
 
 	// Dedup each TupleFilterOperation's desired-state tuples independently.
 	// Desired state is a set per rule; duplicates from iterators are wasteful.
@@ -246,10 +274,19 @@ func (r *Result) postProcess() error {
 		}
 	}
 
-	if firstConflictErr != nil {
-		return firstConflictErr
-	}
-	return nil
+	return firstErr
+}
+
+// Compact deduplicates tuples by full identity and detects write/delete and
+// competing-write conflicts on the same (user, relation, object) relationship.
+// It applies the same post-processing semantics Evaluate runs per-record, but
+// over an arbitrary tuple set — for callers reconciling tuples produced across
+// multiple Evaluate calls (e.g. a batch of input records). Order is preserved,
+// first occurrence wins. Returns the compacted tuples and the first conflict as
+// a *ConflictError, or nil.
+func Compact(tuples []language.Tuple) ([]language.Tuple, error) {
+	collapsed, _, _, firstErr := collapseTuples(tuples, false)
+	return collapsed, firstErr
 }
 
 // dedupTuples removes duplicate tuples by their full identity (including condition and context),

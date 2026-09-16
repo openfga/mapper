@@ -93,6 +93,30 @@ rules:
 
 `Compile` is a one-shot convenience. To compile many sources with the same configuration, build a `Compiler` once with `mapper.NewCompiler(opts...)` and reuse it.
 
+### Batch aggregation
+
+When processing a batch of events, call `Evaluate` per event and accumulate the results. Before writing to OpenFGA, pass the combined tuple slice to `Compact` to deduplicate and detect conflicts:
+
+```go
+var tuples []mapper.Tuple
+for _, event := range events {
+	result, err := m.Evaluate(ctx, event)
+	if err != nil {
+		panic(err)
+	}
+	tuples = append(tuples, result.Tuples...)
+}
+
+compacted, err := mapper.Compact(tuples)
+if err != nil {
+	// err is a *mapper.ConflictError — two incompatible desired states on the same relationship.
+	panic(err)
+}
+// compacted is ready to write to OpenFGA.
+```
+
+`Compact` applies the same dedup and conflict-detection semantics `Evaluate` runs per-record: exact-identity duplicates collapse to the first occurrence, repeated deletes on the same `(user, relation, object)` collapse, and incompatible desired states (write + delete, or two writes with differing condition/context on the same relationship) are reported as a `*ConflictError`.
+
 ## Documentation
 
 - [Language specification](./docs/language-spec.md) — the canonical, user-facing mapping language spec.

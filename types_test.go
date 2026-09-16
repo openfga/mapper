@@ -196,6 +196,158 @@ func TestPostProcess_UROConflict(t *testing.T) {
 	})
 }
 
+func TestCompact(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil input — returns nil, no error", func(t *testing.T) {
+		collapsed, err := Compact(nil)
+		require.NoError(t, err)
+		assert.Nil(t, collapsed)
+	})
+
+	t.Run("empty input — returns empty, no error", func(t *testing.T) {
+		collapsed, err := Compact([]language.Tuple{})
+		require.NoError(t, err)
+		assert.Empty(t, collapsed)
+	})
+
+	t.Run("single tuple — returned unchanged", func(t *testing.T) {
+		input := []language.Tuple{
+			{User: "user:alice", Relation: "member", Object: "org:1", Action: language.ActionWrite},
+		}
+		collapsed, err := Compact(input)
+		require.NoError(t, err)
+		assert.Equal(t, input, collapsed)
+	})
+
+	t.Run("distinct tuples — all preserved in order", func(t *testing.T) {
+		input := []language.Tuple{
+			{User: "user:alice", Relation: "member", Object: "org:1", Action: language.ActionWrite},
+			{User: "user:bob", Relation: "viewer", Object: "doc:1", Action: language.ActionDelete},
+		}
+		collapsed, err := Compact(input)
+		require.NoError(t, err)
+		assert.Equal(t, input, collapsed)
+	})
+
+	t.Run("exact-identity duplicates — first occurrence wins, order preserved", func(t *testing.T) {
+		t1 := language.Tuple{User: "user:alice", Relation: "member", Object: "org:1", Action: language.ActionWrite}
+		t2 := language.Tuple{User: "user:bob", Relation: "viewer", Object: "org:1", Action: language.ActionWrite}
+		input := []language.Tuple{t1, t2, t1} // t1 appears twice, t2 in between
+		collapsed, err := Compact(input)
+		require.NoError(t, err)
+		assert.Equal(t, []language.Tuple{t1, t2}, collapsed)
+	})
+
+	t.Run("order preservation with mixed duplicates", func(t *testing.T) {
+		t1 := language.Tuple{User: "user:a", Relation: "r", Object: "o:1", Action: language.ActionWrite}
+		t2 := language.Tuple{User: "user:b", Relation: "r", Object: "o:1", Action: language.ActionWrite}
+		t3 := language.Tuple{User: "user:c", Relation: "r", Object: "o:1", Action: language.ActionWrite}
+		input := []language.Tuple{t1, t2, t1, t3, t2}
+		collapsed, err := Compact(input)
+		require.NoError(t, err)
+		assert.Equal(t, []language.Tuple{t1, t2, t3}, collapsed)
+	})
+
+	t.Run("same URO differing condition — two writes are a ConflictCompetingWrites", func(t *testing.T) {
+		input := []language.Tuple{
+			{User: "user:alice", Relation: "member", Object: "org:1", Action: language.ActionWrite, Condition: "cond_a"},
+			{User: "user:alice", Relation: "member", Object: "org:1", Action: language.ActionWrite, Condition: "cond_b"},
+		}
+		_, err := Compact(input)
+		require.Error(t, err)
+		var ce *ConflictError
+		require.ErrorAs(t, err, &ce)
+		assert.Equal(t, ConflictCompetingWrites, ce.Kind)
+		assert.Equal(t, "user:alice", ce.User)
+		assert.Equal(t, "member", ce.Relation)
+		assert.Equal(t, "org:1", ce.Object)
+	})
+
+	t.Run("same URO differing context — two writes are a ConflictCompetingWrites", func(t *testing.T) {
+		input := []language.Tuple{
+			{User: "user:alice", Relation: "member", Object: "org:1", Action: language.ActionWrite, Condition: "c", Context: map[string]any{"k": "v1"}},
+			{User: "user:alice", Relation: "member", Object: "org:1", Action: language.ActionWrite, Condition: "c", Context: map[string]any{"k": "v2"}},
+		}
+		_, err := Compact(input)
+		require.Error(t, err)
+		var ce *ConflictError
+		require.ErrorAs(t, err, &ce)
+		assert.Equal(t, ConflictCompetingWrites, ce.Kind)
+	})
+
+	t.Run("write then delete on same URO — ConflictWriteDelete, condition from write", func(t *testing.T) {
+		input := []language.Tuple{
+			{User: "user:alice", Relation: "member", Object: "org:1", Action: language.ActionWrite, Condition: "cond_a"},
+			{User: "user:alice", Relation: "member", Object: "org:1", Action: language.ActionDelete},
+		}
+		_, err := Compact(input)
+		require.Error(t, err)
+		var ce *ConflictError
+		require.ErrorAs(t, err, &ce)
+		assert.Equal(t, ConflictWriteDelete, ce.Kind)
+		assert.Equal(t, "cond_a", ce.Condition)
+	})
+
+	t.Run("delete then write on same URO — ConflictWriteDelete", func(t *testing.T) {
+		input := []language.Tuple{
+			{User: "user:alice", Relation: "member", Object: "org:1", Action: language.ActionDelete},
+			{User: "user:alice", Relation: "member", Object: "org:1", Action: language.ActionWrite},
+		}
+		_, err := Compact(input)
+		require.Error(t, err)
+		var ce *ConflictError
+		require.ErrorAs(t, err, &ce)
+		assert.Equal(t, ConflictWriteDelete, ce.Kind)
+	})
+
+	t.Run("repeated identical deletes — collapse to one, no error", func(t *testing.T) {
+		del := language.Tuple{User: "user:alice", Relation: "member", Object: "org:1", Action: language.ActionDelete}
+		input := []language.Tuple{del, del, del}
+		collapsed, err := Compact(input)
+		require.NoError(t, err)
+		assert.Equal(t, []language.Tuple{del}, collapsed)
+	})
+
+	t.Run("repeated deletes on same URO with differing conditions — collapse to first, no error", func(t *testing.T) {
+		// URO-level dedup: delete targets (user,relation,object) regardless of condition.
+		input := []language.Tuple{
+			{User: "user:alice", Relation: "member", Object: "org:1", Action: language.ActionDelete, Condition: "cond_a"},
+			{User: "user:alice", Relation: "member", Object: "org:1", Action: language.ActionDelete, Condition: "cond_b"},
+		}
+		collapsed, err := Compact(input)
+		require.NoError(t, err)
+		require.Len(t, collapsed, 1)
+		assert.Equal(t, "cond_a", collapsed[0].Condition)
+	})
+
+	t.Run("unknown action — returns ValidationError", func(t *testing.T) {
+		input := []language.Tuple{
+			{User: "user:alice", Relation: "member", Object: "org:1", Action: "bogus"},
+		}
+		_, err := Compact(input)
+		require.Error(t, err)
+		var ve *language.ValidationError
+		require.ErrorAs(t, err, &ve)
+		assert.Contains(t, ve.Message, `unknown tuple action`)
+		assert.Contains(t, ve.Message, `"bogus"`)
+	})
+
+	t.Run("fast path — only first conflict returned", func(t *testing.T) {
+		input := []language.Tuple{
+			{User: "user:alice", Relation: "member", Object: "org:1", Action: language.ActionWrite},
+			{User: "user:alice", Relation: "member", Object: "org:1", Action: language.ActionDelete},
+			{User: "user:bob", Relation: "viewer", Object: "org:2", Action: language.ActionWrite},
+			{User: "user:bob", Relation: "viewer", Object: "org:2", Action: language.ActionDelete},
+		}
+		_, err := Compact(input)
+		require.Error(t, err)
+		var ce *ConflictError
+		require.ErrorAs(t, err, &ce)
+		assert.Equal(t, "user:alice", ce.User) // first conflict, not the second
+	})
+}
+
 func TestErrorUnwrap(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
