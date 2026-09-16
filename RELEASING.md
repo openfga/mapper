@@ -10,11 +10,13 @@ Releases are managed by [release-please](https://github.com/googleapis/release-p
 
 ### Version bump rules
 
-| Commit prefix | Bump |
-|---|---|
-| `feat:` | minor (patch if pre-1.0) |
-| `fix:`, `perf:`, `refactor:` | patch |
-| `feat!:` or `BREAKING CHANGE:` footer | major |
+The repo uses `bump-minor-pre-major` and `bump-patch-for-minor-pre-major`, so bumps differ before and after v1.0.0:
+
+| Commit | Before v1.0.0 | v1.0.0 and later |
+|---|---|---|
+| `feat:` | patch | minor |
+| `fix:`, `perf:`, `refactor:` | patch | patch |
+| Any `type!:` or `BREAKING CHANGE:` footer | minor | major |
 
 ## Cutting a release
 
@@ -58,4 +60,4 @@ feat!: remove the Foo option
 BREAKING CHANGE: the Foo option has been removed. Use Bar instead.
 ```
 
-This produces a major version bump and a dedicated breaking changes section in the changelog.
+This produces a dedicated breaking changes section in the changelog and a major version bump (minor bump before v1.0.0).

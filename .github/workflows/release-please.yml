@@ -4,6 +4,8 @@ permissions:
   contents: read
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       bump-type:
@@ -31,6 +33,9 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.event.head_commit.message, 'release:')
     uses: openfga/.github/.github/workflows/release-please.yml@835baf31562809ad9eb884c73efc5b79318f700f # pin@main
     with:
       trigger-event:   ${{ github.event_name }}

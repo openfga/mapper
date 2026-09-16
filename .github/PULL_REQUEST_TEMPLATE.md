@@ -18,13 +18,9 @@ If your PR is under active development, please submit it as a "draft". Once it's
 ## Changelog
 <!--
 Commit message prefixes (feat:, fix:, etc.) feed the changelog automatically.
-For user-facing changes that need a cleaner description, override the entry here:
-
-BEGIN_COMMIT_OVERRIDE
-feat: describe the change for users here
-END_COMMIT_OVERRIDE
-
-For breaking changes, add a BREAKING CHANGE footer to the commit body instead.
+For user-facing changes that need a cleaner description, add a BEGIN_COMMIT_OVERRIDE /
+END_COMMIT_OVERRIDE block here with the text you want in the changelog instead.
+For breaking changes, add a BREAKING CHANGE footer to the commit body.
 See RELEASING.md for details. Leave this section blank if the commit message is sufficient.
 -->
 
