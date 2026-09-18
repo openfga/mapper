@@ -54,6 +54,8 @@ The user-facing language specification lives in [`docs/language-spec.md`](./docs
 
 Please make sure to follow the existing code style and include tests for your changes. Pull request titles must follow the [Conventional Commits](https://www.conventionalcommits.org/) format, as it is validated in CI.
 
+Commit message prefixes feed the changelog automatically on release. For user-facing changes where the commit message is too terse, add a `BEGIN_COMMIT_OVERRIDE` block to the PR body — see [RELEASING.md](./RELEASING.md#overriding-a-changelog-entry) for details.
+
 ## Getting in Touch
 
 ### Have a question or problem?
