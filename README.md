@@ -24,10 +24,11 @@ A Go module for mapping JSON events into [OpenFGA](https://openfga.dev) relation
 
 This module turns JSON events into OpenFGA relationship tuples. A mapping is authored in a declarative YAML language, compiled once, and then evaluated against events. The engine is stateless — it produces tuples (and tuple filter operations for read-diff-write flows); it makes no OpenFGA API calls, leaving I/O to the consumer.
 
-It is made up of two packages:
+It is made up of three packages:
 
 - **`mapper`** (module root) — compiles validated mapping configurations into an executable `Mapping` and evaluates events against it.
 - **`language`** — parses and validates mapping YAML into a canonical `MappingConfig`. `mapper` depends on `language`, never the reverse.
+- **`apply`** — implements the five-phase tuple-write pipeline: reads existing tuples for each filter, diffs against desired state, and writes the delta to a store through a narrow `TupleClient` interface.
 
 ## Resources
 
@@ -117,12 +118,54 @@ if err != nil {
 
 `Compact` applies the same dedup and conflict-detection semantics `Evaluate` runs per-record: exact-identity duplicates collapse to the first occurrence, repeated deletes on the same `(user, relation, object)` collapse, and incompatible desired states (write + delete, or two writes with differing condition/context on the same relationship) are reported as a `*ConflictError`.
 
+### Writing to a store
+
+The `apply` package implements the read-diff-write pipeline. Wrap your OpenFGA SDK client in an `apply.TupleClient` implementation and pass each `Evaluate` result directly to it:
+
+```go
+import (
+	"context"
+	"errors"
+
+	"github.com/openfga/mapper/apply"
+	"github.com/openfga/mapper/language"
+)
+
+// Adapt your OpenFGA SDK client to apply.TupleClient.
+type fgaClient struct{ /* ... */ }
+
+func (c *fgaClient) ReadTuples(ctx context.Context, filter language.TupleFilter) ([]language.Tuple, error) {
+	// call your SDK here
+}
+func (c *fgaClient) WriteTuples(ctx context.Context, tuples []language.Tuple) error {
+	// call your SDK here
+}
+
+rec := apply.New(&fgaClient{})
+
+result, err := m.Evaluate(ctx, event)
+if err != nil {
+	// evaluation error
+}
+
+if err := rec.Execute(ctx, result); err != nil {
+	var writeErr *apply.WriteError
+	if errors.As(err, &writeErr) {
+		// write phase failed — may be retryable per-record
+	}
+	// hard error (validation, read failure, conflict) — abort
+}
+```
+
+`Execute` reads existing tuples for each filter in the result, diffs against desired state, and writes only the delta. See [`apply/README.md`](./apply/README.md) for the full pipeline and conflict-detection semantics.
+
 ## Documentation
 
 - [Language specification](./docs/language-spec.md) — the canonical, user-facing mapping language spec.
 - [Tuple write specification](./docs/tuple-write-spec.md) — how a consumer turns the engine result into OpenFGA API calls.
 - [Engine architecture](./docs/engine.md) — internal design of the `mapper` package.
 - [Language package](./language/README.md) — internal design of the `language` package.
+- [Apply package](./apply/README.md) — internal design of the `apply` package.
 
 ## Contributing
 
