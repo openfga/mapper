@@ -19,10 +19,3 @@
 ### Documentation
 
 * update READMEs for apply package ([#18](https://github.com/openfga/mapper/issues/18)) ([9860017](https://github.com/openfga/mapper/commit/986001722cfc99b59780b62de153dcdb811a3d85))
-
-
-### Miscellaneous
-
-* release 0.1.0 ([c038b89](https://github.com/openfga/mapper/commit/c038b89ad214cc42d47c5c0d98660f2ddef8634f))
-
-## Changelog
