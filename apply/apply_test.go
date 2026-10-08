@@ -728,6 +728,80 @@ func TestExecute_DirectAndFilterDerivedDeleteSameURO_Deduplicated(t *testing.T) 
 	assert.Len(t, deletes, 1, "direct delete and filter-derived delete on same URO should be deduplicated to one")
 }
 
+func TestExecute_OverlappingPatchOperationsConflict(t *testing.T) {
+	// Two patch operations target the same filter scope, each desiring a different subset
+	// of already-stored tuples. Each diff produces no writes (the desired tuple is already
+	// present) but does produce a delete (the other tuple isn't desired). Without satisfied-
+	// claim tracking, both deletes go through and both relationships are removed.
+	c := &mockClient{
+		results: map[mapper.Conflict][]language.Tuple{
+			{Relation: "member", Object: "org:1"}: {
+				{User: "user:alice", Relation: "member", Object: "org:1"},
+				{User: "user:bob", Relation: "member", Object: "org:1"},
+			},
+		},
+	}
+	rec := New(c)
+
+	result := &mapper.Result{
+		TupleFilterOperations: []mapper.TupleFilterOperation{
+			{
+				Filters: []language.TupleFilter{
+					{Relation: "member", Object: "org:1", Action: language.FilterActionPatch},
+				},
+				Tuples: []language.Tuple{
+					{User: "user:alice", Relation: "member", Object: "org:1", Action: language.ActionWrite},
+				},
+			},
+			{
+				Filters: []language.TupleFilter{
+					{Relation: "member", Object: "org:1", Action: language.FilterActionPatch},
+				},
+				Tuples: []language.Tuple{
+					{User: "user:bob", Relation: "member", Object: "org:1", Action: language.ActionWrite},
+				},
+			},
+		},
+	}
+
+	err := rec.Execute(t.Context(), result)
+	require.Error(t, err)
+
+	var conflictErr *mapper.ConflictError
+	require.True(t, errors.As(err, &conflictErr))
+	assert.Equal(t, mapper.ConflictWriteDelete, conflictErr.Kind)
+	assert.Nil(t, c.written, "no writes should happen when a conflict is detected")
+}
+
+func TestExecute_ValidationFailure_DesiredTupleCoveredOnlyByDeleteFilter(t *testing.T) {
+	// A desired tuple that falls within a delete filter's scope but matches no patch filter
+	// must fail validation — the delete filter will never write it.
+	c := &mockClient{}
+	rec := New(c)
+
+	result := &mapper.Result{
+		TupleFilterOperations: []mapper.TupleFilterOperation{
+			{
+				Filters: []language.TupleFilter{
+					{Relation: "member", Object: "org:1", Action: language.FilterActionPatch},
+					{Relation: "admin", Object: "org:1", Action: language.FilterActionDelete},
+				},
+				Tuples: []language.Tuple{
+					{User: "user:alice", Relation: "member", Object: "org:1", Action: language.ActionWrite},
+					// Covered only by the delete filter's scope — no patch filter will write it.
+					{User: "user:alice", Relation: "admin", Object: "org:1", Action: language.ActionWrite},
+				},
+			},
+		},
+	}
+
+	err := rec.Execute(t.Context(), result)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not covered")
+	assert.Empty(t, c.calls, "no reads should happen after validation failure")
+	assert.Nil(t, c.written, "no writes should happen after validation failure")
+}
+
 func TestExecute_ConditionChangeDeltaIsNotConflict(t *testing.T) {
 	// A patch filter diff that replaces a tuple's condition (delete old + write new on the same
 	// user/relation/object) must not be treated as a cross-boundary conflict.

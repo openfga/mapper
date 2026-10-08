@@ -45,7 +45,7 @@ func New(client TupleClient) *Reconciler {
 // Errors from the write phase are wrapped in *WriteError; all other errors (validation, read)
 // are hard errors that should always abort the event.
 func (r *Reconciler) Execute(ctx context.Context, result *mapper.Result) error {
-	var toWrite, toDelete []language.Tuple
+	var toWrite, toDelete, satisfiedClaims []language.Tuple
 
 	if len(result.TupleFilterOperations) > 0 {
 		// Phase 1: Validate
@@ -70,13 +70,25 @@ func (r *Reconciler) Execute(ctx context.Context, result *mapper.Result) error {
 				fw, fd := diffFilter(f.Action, existing, scoped)
 				toWrite = append(toWrite, fw...)
 				toDelete = append(toDelete, fd...)
+
+				if f.Action == language.FilterActionPatch {
+					existingSet := make(map[string]struct{}, len(existing))
+					for _, e := range existing {
+						existingSet[diffKey(e)] = struct{}{}
+					}
+					for _, t := range scoped {
+						if _, ok := existingSet[diffKey(t)]; ok {
+							satisfiedClaims = append(satisfiedClaims, t)
+						}
+					}
+				}
 			}
 		}
 	}
 
 	// Phase 4: Combine, deduplicate, and conflict-check (always — catches conflicts in
 	// direct-tuple-only results too).
-	combined, err := combineTuples(result.Tuples, toWrite, toDelete)
+	combined, err := combineTuples(result.Tuples, toWrite, toDelete, satisfiedClaims)
 	if err != nil {
 		return err
 	}
@@ -134,7 +146,7 @@ func (r *Reconciler) validate(ops []mapper.TupleFilterOperation) error {
 		for _, t := range op.Tuples {
 			covered := false
 			for _, f := range op.Filters {
-				if len(scopeDesired(f, []language.Tuple{t})) > 0 {
+				if f.Action == language.FilterActionPatch && len(scopeDesired(f, []language.Tuple{t})) > 0 {
 					covered = true
 					break
 				}
@@ -195,7 +207,11 @@ func scopeDesired(filter language.TupleFilter, desired []language.Tuple) []langu
 // context are distinct and do not conflict. Delete tuples are further deduplicated by URO after
 // conflict detection, because the FGA delete API ignores condition and context — two deletes of the
 // same URO with different conditions map to identical API keys and cause the server to reject the batch.
-func combineTuples(nonFiltered, toWrite, toDelete []language.Tuple) ([]language.Tuple, error) {
+//
+// satisfiedClaims holds patch desired-state tuples that required no write (already in the store).
+// They are invisible to the normal write-vs-delete check but must still be protected: a delete
+// targeting a satisfied claim is a cross-operation conflict.
+func combineTuples(nonFiltered, toWrite, toDelete, satisfiedClaims []language.Tuple) ([]language.Tuple, error) {
 	seen := make(map[string]struct{}, len(nonFiltered)+len(toWrite)+len(toDelete))
 	combined := make([]language.Tuple, 0, len(nonFiltered)+len(toWrite)+len(toDelete))
 
@@ -241,6 +257,18 @@ func combineTuples(nonFiltered, toWrite, toDelete []language.Tuple) ([]language.
 			writesByURO[uk] = t
 		}
 	}
+	// Check satisfied desired-state claims against deletes. A delete targeting a no-op
+	// desired tuple is a cross-operation conflict: one patch claims the relationship must
+	// exist, another operation deletes it.
+	for _, t := range satisfiedClaims {
+		if _, ok := deletes[diffKey(t)]; ok {
+			return nil, &mapper.ConflictError{
+				Conflict:  mapper.Conflict{User: t.User, Relation: t.Relation, Object: t.Object},
+				Condition: t.Condition,
+			}
+		}
+	}
+
 	// Iterate combined (slice order) rather than writesByKey (map) so the first
 	// conflict reported is deterministic.
 	for _, t := range combined {
