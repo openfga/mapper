@@ -138,7 +138,8 @@ func (c *fgaClient) ReadTuples(ctx context.Context, filter language.TupleFilter)
 	// call your SDK here
 }
 func (c *fgaClient) WriteTuples(ctx context.Context, tuples []language.Tuple) error {
-	// call your SDK here
+	// partition tuples by Action; submit deletes before writes
+	// (see apply/README.md — condition changes require the old tuple to be deleted first)
 }
 
 rec := apply.New(&fgaClient{})
@@ -146,6 +147,7 @@ rec := apply.New(&fgaClient{})
 result, err := m.Evaluate(ctx, event)
 if err != nil {
 	// evaluation error
+	return
 }
 
 if err := rec.Execute(ctx, result); err != nil {
