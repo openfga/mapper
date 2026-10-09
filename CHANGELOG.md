@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/openfga/mapper/compare/v0.1.0...v0.1.1) (2026-10-09)
+
+
+### Fixed
+
+* **apply:** patch filters with type-prefix objects (e.g. `org:`) now correctly scope desired tuples by prefix match rather than exact equality, consistent with how FGA Read interprets the same filter; previously this caused a silent mass delete of all matching tuples, or from v0.1.0 a hard coverage error on every matching event ([043802d](https://github.com/openfga/mapper/commit/043802d49f7a3ca4e84245d6de9bfa302d340f0c))
+
 ## 0.1.0 (2026-10-08)
 
 
