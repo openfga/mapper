@@ -3,6 +3,7 @@ package apply
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/openfga/mapper"
 	"github.com/openfga/mapper/language"
@@ -141,7 +142,8 @@ func (r *Reconciler) validate(ops []mapper.TupleFilterOperation) error {
 		}
 
 		// Check that every desired tuple is covered by at least one filter's scope.
-		// scopeDesired uses exact-match on non-empty filter fields. A desired tuple
+		// scopeDesired matches user and relation by exact equality and object by exact
+		// equality or type-prefix (e.g. "org:" covers "org:acme"). A desired tuple
 		// that matches no filter scope would be silently dropped — fail fast instead.
 		for _, t := range op.Tuples {
 			covered := false
@@ -183,7 +185,9 @@ func (r *Reconciler) readAll(ctx context.Context, ops []mapper.TupleFilterOperat
 }
 
 // scopeDesired returns only the desired tuples that match a filter's concrete fields.
-// Empty filter fields are wildcards and match any tuple value.
+// Empty filter fields are wildcards and match any tuple value. A type-prefix object
+// (e.g. "org:") matches any tuple whose object starts with that prefix, mirroring
+// how FGA Read interprets the same filter.
 func scopeDesired(filter language.TupleFilter, desired []language.Tuple) []language.Tuple {
 	var scoped []language.Tuple
 	for _, t := range desired {
@@ -193,12 +197,29 @@ func scopeDesired(filter language.TupleFilter, desired []language.Tuple) []langu
 		if filter.Relation != "" && t.Relation != filter.Relation {
 			continue
 		}
-		if filter.Object != "" && t.Object != filter.Object {
-			continue
+		if filter.Object != "" {
+			if isObjectTypePrefix(filter.Object) {
+				if !strings.HasPrefix(t.Object, filter.Object) {
+					continue
+				}
+			} else if t.Object != filter.Object {
+				continue
+			}
 		}
 		scoped = append(scoped, t)
 	}
 	return scoped
+}
+
+// isObjectTypePrefix reports whether s is an object type prefix (e.g. "org:").
+// Duplicated from mapping.go and language/parser.go: it is a frozen predicate
+// over the FGA tuple format, cheaper to copy than to widen the package surface.
+func isObjectTypePrefix(s string) bool {
+	if len(s) < 2 {
+		return false
+	}
+	idx := strings.IndexByte(s, ':')
+	return idx > 0 && idx == len(s)-1
 }
 
 // combineTuples merges non-filtered tuples with filter deltas, deduplicating by full tuple identity.
