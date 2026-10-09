@@ -638,6 +638,28 @@ func TestScopeDesired(t *testing.T) {
 			filter:   language.TupleFilter{User: "user:nobody", Action: language.FilterActionPatch},
 			expected: nil,
 		},
+		{
+			name:   "type-prefix object matches all objects of that type",
+			filter: language.TupleFilter{Object: "org:", Action: language.FilterActionPatch},
+			expected: []language.Tuple{
+				{User: "user:alice", Relation: "member", Object: "org:1", Action: language.ActionWrite},
+				{User: "user:bob", Relation: "viewer", Object: "org:1", Action: language.ActionWrite},
+				{User: "user:charlie", Relation: "member", Object: "org:2", Action: language.ActionWrite},
+			},
+		},
+		{
+			name:   "type-prefix object with relation filter",
+			filter: language.TupleFilter{Relation: "member", Object: "org:", Action: language.FilterActionPatch},
+			expected: []language.Tuple{
+				{User: "user:alice", Relation: "member", Object: "org:1", Action: language.ActionWrite},
+				{User: "user:charlie", Relation: "member", Object: "org:2", Action: language.ActionWrite},
+			},
+		},
+		{
+			name:     "type-prefix object does not match different type",
+			filter:   language.TupleFilter{Object: "group:", Action: language.FilterActionPatch},
+			expected: nil,
+		},
 	}
 
 	for _, tc := range tests {
