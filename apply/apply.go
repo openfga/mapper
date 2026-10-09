@@ -142,7 +142,8 @@ func (r *Reconciler) validate(ops []mapper.TupleFilterOperation) error {
 		}
 
 		// Check that every desired tuple is covered by at least one filter's scope.
-		// scopeDesired uses exact-match on non-empty filter fields. A desired tuple
+		// scopeDesired matches user and relation by exact equality and object by exact
+		// equality or type-prefix (e.g. "org:" covers "org:acme"). A desired tuple
 		// that matches no filter scope would be silently dropped — fail fast instead.
 		for _, t := range op.Tuples {
 			covered := false
