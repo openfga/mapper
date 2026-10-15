@@ -170,12 +170,44 @@ func (m *MappingConfig) Validate(opts ...ValidateOption) error {
 		})
 	}
 
+	seenRules := make(map[string]int, len(m.Rules))
 	for i := range m.Rules {
 		errs = append(errs, validateRule(&m.Rules[i], i, m.root)...)
+
+		name := m.Rules[i].Name
+		if name == "" {
+			continue
+		}
+		if prev, exists := seenRules[name]; exists {
+			field := fmt.Sprintf("rules[%d].name", i)
+			errs = append(errs, &ValidationError{
+				Field:    field,
+				Message:  fmt.Sprintf("duplicate rule name %q (rules[%d] and rules[%d])", name, prev, i),
+				Position: nodePosition(resolveNodePath(m.root, field)),
+			})
+			continue
+		}
+		seenRules[name] = i
 	}
 
+	seenTests := make(map[string]int, len(m.Tests))
 	for i := range m.Tests {
 		errs = append(errs, validateTestCase(&m.Tests[i], i, m.root)...)
+
+		name := m.Tests[i].Name
+		if name == "" {
+			continue
+		}
+		if prev, exists := seenTests[name]; exists {
+			field := fmt.Sprintf("tests[%d].name", i)
+			errs = append(errs, &ValidationError{
+				Field:    field,
+				Message:  fmt.Sprintf("duplicate test name %q (tests[%d] and tests[%d])", name, prev, i),
+				Position: nodePosition(resolveNodePath(m.root, field)),
+			})
+			continue
+		}
+		seenTests[name] = i
 	}
 
 	return errors.Join(errs...)
