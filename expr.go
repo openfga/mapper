@@ -272,25 +272,22 @@ func checkForwardRefs(vars language.Variables) error {
 			seen[ref] = true
 
 			j, defined := pos[ref]
-			if !defined {
-				errs = append(errs, &EvalError{
-					Expression: truncateExpr(v.Expression),
-					Field:      field,
-					Err:        fmt.Errorf("variable %q references undefined variable %q", v.Name, ref),
-				})
-			} else if j == i {
-				errs = append(errs, &EvalError{
-					Expression: truncateExpr(v.Expression),
-					Field:      field,
-					Err:        fmt.Errorf("variable %q references itself", v.Name),
-				})
-			} else if j > i {
-				errs = append(errs, &EvalError{
-					Expression: truncateExpr(v.Expression),
-					Field:      field,
-					Err:        fmt.Errorf("variable %q references %q which is defined later", v.Name, ref),
-				})
+			var refErr error
+			switch {
+			case !defined:
+				refErr = fmt.Errorf("variable %q references undefined variable %q", v.Name, ref)
+			case j == i:
+				refErr = fmt.Errorf("variable %q references itself", v.Name)
+			case j > i:
+				refErr = fmt.Errorf("variable %q references %q which is defined later", v.Name, ref)
+			default:
+				continue
 			}
+			errs = append(errs, &EvalError{
+				Expression: truncateExpr(v.Expression),
+				Field:      field,
+				Err:        refErr,
+			})
 		}
 	}
 	return errors.Join(errs...)
