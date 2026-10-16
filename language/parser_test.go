@@ -2557,7 +2557,7 @@ tests:
 			for _, ve := range allValidationErrors(config.Validate()) {
 				gotFields = append(gotFields, ve.Field)
 				if strings.Contains(ve.Message, "duplicate") {
-					assert.Contains(t, ve.Message, "[0] and ", "duplicate should reference the first occurrence")
+					assert.Contains(t, ve.Message, "(first defined at index 0)", "duplicate should reference the first occurrence")
 					assert.Positive(t, ve.Position.StartLine)
 				}
 			}

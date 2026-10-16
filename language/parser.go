@@ -182,7 +182,7 @@ func (m *MappingConfig) Validate(opts ...ValidateOption) error {
 			field := fmt.Sprintf("rules[%d].name", i)
 			errs = append(errs, &ValidationError{
 				Field:    field,
-				Message:  fmt.Sprintf("duplicate rule name %q (rules[%d] and rules[%d])", name, prev, i),
+				Message:  fmt.Sprintf("duplicate rule name %q (first defined at index %d)", name, prev),
 				Position: nodePosition(resolveNodePath(m.root, field)),
 			})
 			continue
@@ -202,7 +202,7 @@ func (m *MappingConfig) Validate(opts ...ValidateOption) error {
 			field := fmt.Sprintf("tests[%d].name", i)
 			errs = append(errs, &ValidationError{
 				Field:    field,
-				Message:  fmt.Sprintf("duplicate test name %q (tests[%d] and tests[%d])", name, prev, i),
+				Message:  fmt.Sprintf("duplicate test name %q (first defined at index %d)", name, prev),
 				Position: nodePosition(resolveNodePath(m.root, field)),
 			})
 			continue

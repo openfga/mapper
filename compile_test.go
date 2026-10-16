@@ -526,7 +526,7 @@ rules:
 	valErrs := allValidationErrors(err)
 	require.Len(t, valErrs, 1)
 	assert.Equal(t, "rules[2].name", valErrs[0].Field)
-	assert.Contains(t, valErrs[0].Message, `duplicate rule name "dup" (rules[0] and rules[2])`)
+	assert.Contains(t, valErrs[0].Message, `duplicate rule name "dup" (first defined at index 0)`)
 	assert.Positive(t, valErrs[0].Position.StartLine)
 }
 
@@ -558,7 +558,7 @@ tests:
 	valErrs := allValidationErrors(err)
 	require.Len(t, valErrs, 1)
 	assert.Equal(t, "tests[1].name", valErrs[0].Field)
-	assert.Contains(t, valErrs[0].Message, `duplicate test name "same"`)
+	assert.Contains(t, valErrs[0].Message, `duplicate test name "same" (first defined at index 0)`)
 }
 
 func TestCompileUndefinedVariableReference(t *testing.T) {

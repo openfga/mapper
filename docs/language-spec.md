@@ -36,7 +36,7 @@ Rules are evaluated in order. Each rule has the following fields:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `name` | string | Yes | Human-readable identifier (must be unique within the file for clarity, though not enforced at runtime). |
+| `name` | string | Yes | Human-readable identifier. Must be unique within the file; duplicates are a `ValidationError`. |
 | `when` | string | No | Expr expression. When absent or empty, the rule always runs. |
 | `action` | string | No | `"write"` or `"delete"`. When set, applies to all tuples in the rule; tuple-level `action` is forbidden. |
 | `variables` | mapping | No | Ordered key-value pairs where keys are variable names and values are Expr expressions. |
@@ -70,7 +70,7 @@ The rule-level `action` applies to desired-state tuples only; it does not affect
 
 ### Variables
 
-Variables are an ordered YAML mapping. Each variable is an Expr expression evaluated sequentially. A variable can reference `input` and any previously defined variable via `variables.<name>`.
+Variables are an ordered YAML mapping. Each variable is an Expr expression evaluated sequentially. A variable can reference `input` and any previously defined variable via `variables.<name>`. `variables.<name>` anywhere in the rule (variable expressions, tuple templates, tuple `when` guards, tuple filters, `context` values, and `iterator.source`) must name a variable declared in that rule's `variables` block.
 
 ```yaml
 variables:
@@ -79,7 +79,7 @@ variables:
 ```
 
 **Constraints:**
-- Forward references are rejected at evaluation time (AST-based detection before variable evaluation).
+- Forward references, self references, and references to undeclared variables (`variables.<name>`) are rejected at compile time (AST-based detection before variable evaluation).
 - Duplicate variable names within the same rule are rejected at validation time.
 - String results exceeding 4KB are truncated at a UTF-8 boundary.
 
@@ -331,7 +331,7 @@ After all rules:
 
 - Rule-level when guards only have access to `input`. Direct member access on `variables` (for example, `variables.foo`) in rule-level when guards is rejected at compile time. Tuple-level when guards (on individual tuples or iterator tuples) retain full access to both `input` and `variables`.
 - Variable expressions are compiled during `Compile()` along with the rest of the rule, and the resulting compiled expressions are evaluated at runtime. The set of available variable names grows with each variable.
-- Forward references (variable A referencing later-defined variable B) are detected via AST analysis and rejected before evaluation.
+- Forward references (variable A referencing later-defined variable B), self references, and references to undeclared variables are detected via AST analysis and rejected at compile time. Only `variables.<name>` existence is enforced statically; `input.*` access stays dynamic, as does `variables[expr]` with a non-literal key.
 - Iterator variables are scoped to `iterator.tuples` only. They are not available in rule-level `tuples` or in other rules.
 - `input` and `variables` are reserved names and cannot be used as iterator `as` names.
 
@@ -394,7 +394,7 @@ All error types are distinguishable programmatically:
 
 | Type | When | Notable Fields |
 |------|------|---------------|
-| EvalError | Expression syntax/runtime errors (including interpolation), forward references, limit violations (max tuples, max iterator items, timeout). | Expression, RuleName, Err |
+| EvalError | Expression syntax/runtime errors (including interpolation), forward, self, and undefined variable references, limit violations (max tuples, max iterator items, timeout). | Expression, RuleName, Err |
 | ValidationError | YAML structural validation errors (missing fields, invalid values, version mismatch). | Field, Message, Position |
 | ConflictError | Write/delete conflict on the same (user, relation, object) key. | User, Relation, Object |
 
@@ -450,7 +450,7 @@ tests:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `name` | string | Yes | Test case name. |
+| `name` | string | Yes | Test case name. Must be unique within the file; duplicates are a `ValidationError`. |
 | `input` | object | Yes | The JSON event to evaluate. |
 | `expect_tuples` | list | No | Expected tuple output (order-independent matching). Omit for rules that only test tuple filters. |
 | `expect_tuple_filters` | list | No | Expected rendered tuple filters (order-independent matching). Each filter should have `user`, `relation`, and/or `object` fields, plus optionally `action`. |
