@@ -496,3 +496,304 @@ rules:
 	_, err := compiler.Compile(yaml)
 	require.NoError(t, err)
 }
+
+func TestCompileDuplicateRuleNames(t *testing.T) {
+	t.Parallel()
+
+	yaml := []byte(`
+version: "1"
+rules:
+  - name: "dup"
+    tuples:
+      - user: "user:{{ input.id }}"
+        relation: "member"
+        object: "org:acme"
+  - name: "other"
+    tuples:
+      - user: "user:{{ input.id }}"
+        relation: "member"
+        object: "org:acme"
+  - name: "dup"
+    tuples:
+      - user: "user:{{ input.id }}"
+        relation: "admin"
+        object: "org:acme"
+`)
+
+	_, err := Compile(yaml)
+	require.Error(t, err)
+
+	valErrs := allValidationErrors(err)
+	require.Len(t, valErrs, 1)
+	assert.Equal(t, "rules[2].name", valErrs[0].Field)
+	assert.Contains(t, valErrs[0].Message, `duplicate rule name "dup" (first defined at index 0)`)
+	assert.Positive(t, valErrs[0].Position.StartLine)
+}
+
+func TestCompileDuplicateTestNames(t *testing.T) {
+	t.Parallel()
+
+	yaml := []byte(`
+version: "1"
+rules:
+  - name: "r"
+    tuples:
+      - user: "user:{{ input.id }}"
+        relation: "member"
+        object: "org:acme"
+tests:
+  - name: "same"
+    input: { id: "1" }
+    expect_tuples:
+      - { user: "user:1", relation: "member", object: "org:acme" }
+  - name: "same"
+    input: { id: "2" }
+    expect_tuples:
+      - { user: "user:2", relation: "member", object: "org:acme" }
+`)
+
+	_, err := Compile(yaml)
+	require.Error(t, err)
+
+	valErrs := allValidationErrors(err)
+	require.Len(t, valErrs, 1)
+	assert.Equal(t, "tests[1].name", valErrs[0].Field)
+	assert.Contains(t, valErrs[0].Message, `duplicate test name "same" (first defined at index 0)`)
+}
+
+func TestCompileUndefinedVariableReference(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		rule      string
+		wantField string
+	}{
+		{
+			name: "tuple template",
+			rule: `
+    variables:
+      org: "input.org"
+    tuples:
+      - user: "user:{{ input.id }}"
+        relation: "member"
+        object: "org:{{ variables.orgg }}"`,
+			wantField: "object",
+		},
+		{
+			name: "tuple when guard",
+			rule: `
+    variables:
+      org: "input.org"
+    tuples:
+      - user: "user:{{ input.id }}"
+        relation: "member"
+        object: "org:{{ variables.org }}"
+        when: "variables.is_admin"`,
+			wantField: "tuple.when",
+		},
+		{
+			name: "tuple filter",
+			rule: `
+    tuple_filters:
+      - user: "user:{{ variables.uid }}"
+        action: delete`,
+			wantField: "user",
+		},
+		{
+			name: "variable expression",
+			rule: `
+    variables:
+      org: "variables.missing"
+    tuples:
+      - user: "user:{{ input.id }}"
+        relation: "member"
+        object: "org:{{ variables.org }}"`,
+			wantField: "variables.org",
+		},
+		{
+			name: "iterator source",
+			rule: `
+    iterator:
+      source: "variables.items"
+      as: item
+      tuples:
+        - user: "user:{{ item }}"
+          relation: "member"
+          object: "org:acme"`,
+			wantField: "iterator.source",
+		},
+		{
+			name: "iterator tuple when guard",
+			rule: `
+    iterator:
+      source: "input.items"
+      as: item
+      tuples:
+        - user: "user:{{ item }}"
+          relation: "member"
+          object: "org:acme"
+          when: "variables.nope"`,
+			wantField: "tuple.when",
+		},
+		{
+			name: "tuple context value",
+			rule: `
+    tuples:
+      - user: "user:{{ input.id }}"
+        relation: "member"
+        object: "org:acme"
+        condition: "c"
+        context:
+          k: "{{ variables.nope }}"`,
+			wantField: "context.k",
+		},
+		{
+			name: "bracket notation",
+			rule: `
+    tuples:
+      - user: "user:{{ variables['nope'] }}"
+        relation: "member"
+        object: "org:acme"`,
+			wantField: "user",
+		},
+		{
+			name: "optional chaining",
+			rule: `
+    tuples:
+      - user: "user:{{ variables?.nope }}"
+        relation: "member"
+        object: "org:acme"`,
+			wantField: "user",
+		},
+		{
+			name: "inside closure",
+			rule: `
+    tuples:
+      - user: "user:{{ input.id }}"
+        relation: "member"
+        object: "org:acme"
+        when: "any(input.items, {# == variables.nope})"`,
+			wantField: "tuple.when",
+		},
+		{
+			name: "same undefined name repeated in one expression",
+			rule: `
+    tuples:
+      - user: "user:{{ variables.nope + variables.nope }}"
+        relation: "member"
+        object: "org:acme"`,
+			wantField: "user",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			yaml := []byte("version: \"1\"\nrules:\n  - name: \"r\"" + tt.rule + "\n")
+			_, err := Compile(yaml)
+			require.Error(t, err)
+
+			evalErrs := allEvalErrors(err)
+			require.Len(t, evalErrs, 1, err.Error())
+			assert.Equal(t, tt.wantField, evalErrs[0].Field)
+			assert.Contains(t, evalErrs[0].Error(), "undefined variable")
+		})
+	}
+}
+
+func TestCompileVariableSelfReference(t *testing.T) {
+	t.Parallel()
+
+	yaml := []byte(`
+version: "1"
+rules:
+  - name: "r"
+    variables:
+      a: "variables.a"
+    tuples:
+      - user: "user:{{ variables.a }}"
+        relation: "member"
+        object: "org:acme"
+`)
+
+	_, err := Compile(yaml)
+	require.Error(t, err)
+
+	evalErrs := allEvalErrors(err)
+	require.Len(t, evalErrs, 1)
+	assert.Equal(t, "variables.a", evalErrs[0].Field)
+	assert.Contains(t, evalErrs[0].Error(), `variable "a" references itself`)
+}
+
+func TestCompileMultipleUndefinedVariablesInOneExpression(t *testing.T) {
+	t.Parallel()
+
+	yaml := []byte(`
+version: "1"
+rules:
+  - name: "r"
+    tuples:
+      - user: "user:{{ variables.a + variables.b }}"
+        relation: "member"
+        object: "org:acme"
+`)
+
+	_, err := Compile(yaml)
+	require.Error(t, err)
+
+	evalErrs := allEvalErrors(err)
+	require.Len(t, evalErrs, 2)
+	assert.Contains(t, evalErrs[0].Error(), `"a"`)
+	assert.Contains(t, evalErrs[1].Error(), `"b"`)
+}
+
+func TestCompileVariablesAreScopedPerRule(t *testing.T) {
+	t.Parallel()
+
+	yaml := []byte(`
+version: "1"
+rules:
+  - name: "declares"
+    variables:
+      org: "input.org"
+    tuples:
+      - user: "user:{{ variables.org }}"
+        relation: "member"
+        object: "org:acme"
+  - name: "borrows"
+    tuples:
+      - user: "user:{{ variables.org }}"
+        relation: "member"
+        object: "org:acme"
+`)
+
+	_, err := Compile(yaml)
+	require.Error(t, err)
+
+	evalErrs := allEvalErrors(err)
+	require.Len(t, evalErrs, 1)
+	assert.Equal(t, "borrows", evalErrs[0].RuleName)
+}
+
+func TestCompileDefinedVariableReferencesStillCompile(t *testing.T) {
+	t.Parallel()
+
+	yaml := []byte(`
+version: "1"
+rules:
+  - name: "r"
+    variables:
+      org: "input.org"
+      slug: "lower(variables.org)"
+    tuples:
+      - user: "user:{{ input.anything.dynamic }}"
+        relation: "member"
+        object: "org:{{ variables.slug }}"
+        when: "variables.org != '' && len(variables) > 0"
+`)
+
+	_, err := Compile(yaml)
+	require.NoError(t, err)
+}

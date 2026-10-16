@@ -58,6 +58,7 @@ All structural checks below run during `Validate()`/parsing (`parser.go`), befor
 | Invalid tuple-level `action` | `rules[{i}].tuples[{j}].action` | `invalid action "pause" (must be "write" or "delete")` |
 | `context` set without `condition` | `rules[{i}].tuples[{j}].context` | `context requires a condition name` |
 | `condition` set on an `action: delete` tuple | `rules[{i}].tuples[{j}].condition` | `condition is not allowed on delete tuples` |
+| Duplicate rule name | `rules[{i}].name` | `duplicate rule name "x" (first defined at index 0)` |
 | Empty variable name | `rules[{i}].variables[{j}].name` | `is required` |
 | Empty variable expression | `rules[{i}].variables[{j}].expression` | `is required` |
 | Duplicate variable name | `rules[{i}].variables[{j}]` | `duplicate variable name "x" (first defined at index 0)` |
@@ -70,6 +71,7 @@ All structural checks below run during `Validate()`/parsing (`parser.go`), befor
 | Invalid tuple filter `action` | `rules[{i}].tuple_filters[{j}].action` | `invalid action "ignore" (must be "patch" or "delete")` |
 | `delete` filters combined with rule-level tuple templates | `rules[{i}].tuple_filters` | (rejected — see `validateTupleFilters()`) |
 | Test case missing `name` | `tests[{i}].name` | `is required` |
+| Duplicate test case name | `tests[{i}].name` | `duplicate test name "x" (first defined at index 0)` |
 
 ## Source Positions
 

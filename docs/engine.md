@@ -42,7 +42,7 @@ For each rule in order:
 
 1. **Evaluate Variables** — Sequential evaluation with scope that grows with each variable
    - Each variable can reference `input` (the event) and `variables` (prior variables)
-   - Forward references are detected via AST analysis and rejected before evaluation
+   - Forward references, self references, and references to undeclared variables are detected via AST analysis and rejected before evaluation
    - String results exceeding 4KB are truncated at UTF-8 boundaries
 
 2. **Evaluate When Guard** — Determines if the rule should run
@@ -250,7 +250,7 @@ The tables below enumerate every condition that produces each mapper error type,
 
 ### EvalError Scenarios
 
-Compile-time (surfaced during `Compile()`, before any event is evaluated) — sites: `compiler.go` (`parseInterpolation`), `expr.go` (`compileExpr`, `checkForwardRefs`):
+Compile-time (surfaced during `Compile()`, before any event is evaluated) — sites: `compiler.go` (`parseInterpolation`, `checkVarRefs`), `expr.go` (`compileExpr`, `checkForwardRefs`, `undefinedVarRefs`):
 
 | Scenario | Trigger | Example Message |
 |----------|---------|------------------|
@@ -258,6 +258,8 @@ Compile-time (surfaced during `Compile()`, before any event is evaluated) — si
 | Empty interpolation | `{{ }}` with no expression inside | `empty expression {{ }} in user field` |
 | Expression too large | An expression exceeds the 64KB size limit | `expression exceeds max size of 65536 bytes` |
 | Forward reference | A variable references a variable defined later in the same `variables` block | `variable "a" references "b" which is defined later` |
+| Self reference | A variable references itself | `variable "a" references itself` |
+| Undefined variable reference | `variables.<name>` (dot or bracket form) in a variable expression, tuple template, tuple `when` guard, tuple filter, `context` value, or `iterator.source` names a variable not declared in that rule's `variables` block | `references undefined variable "b"` |
 | Expression syntax error | Invalid Expr syntax in a when guard, variable, iterator source, or interpolation | (wrapped expr-lang parse error, e.g. `unexpected token: '}'`) |
 
 Runtime (surfaced during `Evaluate()` against a specific event) — sites: `mapping.go` (`renderInterp`, `Evaluate`), `iterator.go` (`evaluateIteratorSource`), `expr.go` (`json_path`, `fga_escape`):
@@ -308,22 +310,22 @@ text := diags.String()                // grouped human-readable output
 
 - **TupleFilterOperation:** Groups a rule's rendered `[]TupleFilter` with its desired-state `[]Tuple`. One per rule that has `tuple_filters`. The consumer uses these to drive read-diff-write against FGA.
 - **Evaluation order:** `when` guard evaluated before variables. Rule-level when guards only have `input` in scope; direct `variables` member access is rejected at compile time via `hasVariablesRef()`. Tuple-level when guards retain access to both `input` and `variables`.
-- **Expression compilation:** All expressions compiled at `Compile()` time; variable forward references caught via `checkForwardRefs()`; when guard and interpolation expressions compiled with `AllowUndefinedVariables` since event shape is dynamic.
+- **Expression compilation:** All expressions compiled at `Compile()` time; variable forward, self, and undefined references caught via `checkForwardRefs()` and `checkVarRefs()`; when guard and interpolation expressions compiled with `AllowUndefinedVariables` since event shape is dynamic.
 - **Tuple context:** Context values are compiled as interpolations via `compileInterpField()`.
 
 ## Design Decisions
 
 ### Why evaluate variables in declaration order?
 
-All expressions, variables included, are compiled once during `Compiler.Compile()`. Variables are then *evaluated* in declaration order during `Evaluate()`: each variable's value is added to scope before the next runs, so variable B can reference variable A. Forward references (B referencing a later-declared C) are rejected at compile time by `checkForwardRefs()` rather than silently evaluating to `nil`.
+All expressions, variables included, are compiled once during `Compiler.Compile()`. Variables are then *evaluated* in declaration order during `Evaluate()`: each variable's value is added to scope before the next runs, so variable B can reference variable A. Forward references (B referencing a later-declared C), self references, and references to names that are not declared at all are rejected at compile time (`checkForwardRefs()` for variable expressions, `checkVarRefs()` for everything else that can read `variables`) rather than silently evaluating to `nil`. Dynamic access such as `variables[someExpr]` cannot be checked statically.
 
 ### Why use `AllowUndefinedVariables`?
 
 Events have dynamic shapes—different events have different fields. We use `expr.Env(env)` for type information (is `input` a map?) while allowing undefined fields (does `input.user.email` exist?) to handle varying JSON structures. The alternative (strict mode) would require knowing the exact event schema at compile time.
 
-### Why detect forward references?
+### Why detect forward, self, and undefined references?
 
-Without detection, `variables.b` referencing a later-defined `variables.c` would silently evaluate to `nil` (expr-lang returns `nil` for missing map keys). This leads to confusing behavior. AST-based detection catches these errors before evaluation begins, providing clear error messages.
+Without detection, `variables.b` referencing a later-defined, self-referencing, or undeclared `variables.c` would silently evaluate to `nil` (expr-lang returns `nil` for missing map keys). This leads to confusing behavior. AST-based detection catches these errors before evaluation begins, providing clear error messages.
 
 ### Why truncate variables to 4KB?
 

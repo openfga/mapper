@@ -2487,3 +2487,81 @@ rules:
 	}
 	assert.True(t, found, "expected invalid variable name error, got: %v", verrs)
 }
+
+func TestValidateDuplicateNames(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		yaml       string
+		wantFields []string
+	}{
+		{
+			name: "three rules share a name: each repeat points back to the first",
+			yaml: `version: "1"
+rules:
+  - { name: "d", tuples: [{ user: "u:x", relation: "r", object: "o:1" }] }
+  - { name: "d", tuples: [{ user: "u:x", relation: "r", object: "o:2" }] }
+  - { name: "d", tuples: [{ user: "u:x", relation: "r", object: "o:3" }] }
+`,
+			wantFields: []string{"rules[1].name", "rules[2].name"},
+		},
+		{
+			name: "rule names are case-sensitive",
+			yaml: `version: "1"
+rules:
+  - { name: "d", tuples: [{ user: "u:x", relation: "r", object: "o:1" }] }
+  - { name: "D", tuples: [{ user: "u:x", relation: "r", object: "o:2" }] }
+`,
+		},
+		{
+			name: "missing rule names report required, not duplicate",
+			yaml: `version: "1"
+rules:
+  - { tuples: [{ user: "u:x", relation: "r", object: "o:1" }] }
+  - { tuples: [{ user: "u:x", relation: "r", object: "o:2" }] }
+`,
+			wantFields: []string{"rules[0].name", "rules[1].name"},
+		},
+		{
+			name: "a rule and a test may share a name",
+			yaml: `version: "1"
+rules:
+  - { name: "d", tuples: [{ user: "u:x", relation: "r", object: "o:1" }] }
+tests:
+  - { name: "d", input: {}, expect_tuples: [] }
+`,
+		},
+		{
+			name: "three tests share a name",
+			yaml: `version: "1"
+rules:
+  - { name: "r", tuples: [{ user: "u:x", relation: "r", object: "o:1" }] }
+tests:
+  - { name: "t", input: {}, expect_tuples: [] }
+  - { name: "t", input: {}, expect_tuples: [] }
+  - { name: "t", input: {}, expect_tuples: [] }
+`,
+			wantFields: []string{"tests[1].name", "tests[2].name"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			config, err := parseMapping([]byte(tt.yaml))
+			require.NoError(t, err)
+
+			var gotFields []string
+			for _, ve := range allValidationErrors(config.Validate()) {
+				gotFields = append(gotFields, ve.Field)
+				if strings.Contains(ve.Message, "duplicate") {
+					assert.Contains(t, ve.Message, "(first defined at index 0)", "duplicate should reference the first occurrence")
+					assert.Positive(t, ve.Position.StartLine)
+				}
+			}
+			assert.Equal(t, tt.wantFields, gotFields)
+		})
+	}
+}

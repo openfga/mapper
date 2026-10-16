@@ -272,13 +272,22 @@ func checkForwardRefs(vars language.Variables) error {
 			seen[ref] = true
 
 			j, defined := pos[ref]
-			if defined && j > i {
-				errs = append(errs, &EvalError{
-					Expression: truncateExpr(v.Expression),
-					Field:      field,
-					Err:        fmt.Errorf("variable %q references %q which is defined later", v.Name, ref),
-				})
+			var refErr error
+			switch {
+			case !defined:
+				refErr = fmt.Errorf("variable %q references undefined variable %q", v.Name, ref)
+			case j == i:
+				refErr = fmt.Errorf("variable %q references itself", v.Name)
+			case j > i:
+				refErr = fmt.Errorf("variable %q references %q which is defined later", v.Name, ref)
+			default:
+				continue
 			}
+			errs = append(errs, &EvalError{
+				Expression: truncateExpr(v.Expression),
+				Field:      field,
+				Err:        refErr,
+			})
 		}
 	}
 	return errors.Join(errs...)
@@ -298,6 +307,31 @@ func hasVariablesRef(code string) bool {
 	visitor := &varRefVisitor{}
 	ast.Walk(&tree.Node, visitor)
 	return len(visitor.refs) > 0
+}
+
+// undefinedVarRefs returns the distinct `variables.X` names referenced in code
+// that are not in declared, in order of first appearance.
+func undefinedVarRefs(code string, declared map[string]bool) []string {
+	if len(code) > maxExpressionSize {
+		return nil // oversized expressions are rejected by compileExpr
+	}
+	tree, err := parser.Parse(code)
+	if err != nil {
+		return nil // syntax errors are caught elsewhere
+	}
+	visitor := &varRefVisitor{}
+	ast.Walk(&tree.Node, visitor)
+
+	var undefined []string
+	seen := make(map[string]bool)
+	for _, ref := range visitor.refs {
+		if declared[ref] || seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		undefined = append(undefined, ref)
+	}
+	return undefined
 }
 
 // varRefVisitor collects names from `variables.X` member accesses.
