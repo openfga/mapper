@@ -248,6 +248,10 @@ func parseInterpolation(s, field string, pos language.Position, iterAsName strin
 type compilationContext struct {
 	failedInterps map[string]bool // raw string -> already reported an error
 	errs          []error
+
+	// Per-rule scope, set by compileRule before compiling the rule's expressions.
+	ruleName     string
+	declaredVars map[string]bool
 }
 
 func newCompilationContext() *compilationContext {
@@ -258,6 +262,21 @@ func newCompilationContext() *compilationContext {
 
 func (c *compilationContext) addErr(err error) {
 	c.errs = append(c.errs, err)
+}
+
+// checkVarRefs reports each `variables.X` reference in code whose name is not
+// declared in the current rule's variables block. The runtime variables env is
+// an untyped map, so expr-lang cannot catch these at compile time on its own.
+func (c *compilationContext) checkVarRefs(code, field string, pos language.Position) {
+	for _, name := range undefinedVarRefs(code, c.declaredVars) {
+		c.addErr(&EvalError{
+			Expression: truncateExpr(code),
+			RuleName:   c.ruleName,
+			Field:      field,
+			Position:   pos,
+			Err:        fmt.Errorf("references undefined variable %q", name),
+		})
+	}
 }
 
 // compileInterpField compiles an interpolated string field, deduplicating errors
@@ -277,6 +296,11 @@ func (c *compilationContext) compileInterpField(s, field string, pos language.Po
 			c.errs = append(c.errs, err)
 		}
 		return compiledInterp{raw: s, field: field, position: pos}
+	}
+	for _, seg := range ci.segments {
+		if seg.program != nil {
+			c.checkVarRefs(seg.code, field, pos)
+		}
 	}
 	return *ci
 }
@@ -328,8 +352,11 @@ func compileRule(rule *language.Rule, ctx *compilationContext) compiledRule {
 
 	// Variable source positions, keyed by name, stamped at parse time.
 	varPos := make(map[string]language.Position, len(rule.Variables))
+	ctx.ruleName = rule.Name
+	ctx.declaredVars = make(map[string]bool, len(rule.Variables))
 	for _, v := range rule.Variables {
 		varPos[v.Name] = v.Position
+		ctx.declaredVars[v.Name] = true
 	}
 
 	// Check forward references: stamp each *EvalError with rule context and add
@@ -411,6 +438,7 @@ func compileRule(rule *language.Rule, ctx *compilationContext) compiledRule {
 			} else {
 				ci.source = prog
 				ci.sourceCode = rule.Iterator.Source
+				ctx.checkVarRefs(rule.Iterator.Source, "iterator.source", rule.Iterator.SourcePos)
 			}
 		}
 
@@ -449,6 +477,7 @@ func compileTuple(pt *language.ParsedTuple, iterAsName string, ruleName string, 
 		} else {
 			ct.when = prog
 			ct.whenCode = pt.When
+			ctx.checkVarRefs(pt.When, "tuple.when", pt.WhenPos)
 		}
 	}
 
